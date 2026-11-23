@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- New `gokv.GetMultiple` function for retrieving the values of multiple keys in one call. The call is not all-or-nothing: keys that don't exist (anymore) are returned in a separate `missing` slice while the values of all existing keys are returned as usual, and actual store errors are still returned as errors instead of being reported as missing keys.
+
 v0.7.0 (2024-01-28)
 -------------------
 
