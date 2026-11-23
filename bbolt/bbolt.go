@@ -1,8 +1,12 @@
 package bbolt
 
 import (
+	"bytes"
+	"errors"
+
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -36,6 +40,100 @@ func (s Store) Set(k string, v any) error {
 		return err
 	}
 	return nil
+}
+
+// Update atomically reads, modifies and writes the value for the given key.
+//
+// The read and write happen in one bbolt write transaction, so concurrent
+// updates are serialized by the database.
+func (s Store) Update(k string, v any, update gokv.UpdateFunc) error {
+	if err := util.CheckKey(k); err != nil {
+		return err
+	}
+	if err := util.CheckPointer(v); err != nil {
+		return err
+	}
+	if update == nil {
+		return errors.New("the update function is nil")
+	}
+
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.bucketName))
+		data := b.Get([]byte(k))
+		found := data != nil
+
+		if err := util.ResetPointer(v); err != nil {
+			return err
+		}
+		if found {
+			if err := s.codec.Unmarshal(data, v); err != nil {
+				return err
+			}
+		}
+		if err := update(found); err != nil {
+			return err
+		}
+
+		newData, err := s.codec.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(k), newData)
+	})
+}
+
+// CompareAndSwap atomically replaces the value for k if it matches oldValue.
+// A nil oldValue means that k must not exist.
+func (s Store) CompareAndSwap(k string, oldValue, newValue any) (swapped bool, err error) {
+	if err := util.CheckKeyAndValue(k, newValue); err != nil {
+		return false, err
+	}
+	if oldValue != nil {
+		if err := util.CheckVal(oldValue); err != nil {
+			return false, err
+		}
+	}
+
+	var oldData []byte
+	if oldValue != nil {
+		oldData, err = s.codec.Marshal(oldValue)
+		if err != nil {
+			return false, err
+		}
+	}
+	newData, err := s.codec.Marshal(newValue)
+	if err != nil {
+		return false, err
+	}
+
+	err = s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.bucketName))
+		current := b.Get([]byte(k))
+		found := current != nil
+		if oldValue == nil {
+			if found {
+				return nil
+			}
+		} else if !found || !bytes.Equal(current, oldData) {
+			return nil
+		}
+		if err := b.Put([]byte(k), newData); err != nil {
+			return err
+		}
+		swapped = true
+		return nil
+	})
+	return swapped, err
+}
+
+// Increment atomically adds delta to the integer value for k.
+// A missing key is treated as zero.
+func (s Store) Increment(k string, delta int64) (value int64, err error) {
+	err = s.Update(k, &value, func(found bool) error {
+		value += delta
+		return nil
+	})
+	return value, err
 }
 
 // Get retrieves the stored value for the given key.
@@ -161,3 +259,7 @@ func NewStore(options Options) (Store, error) {
 
 	return result, nil
 }
+
+var _ gokv.AtomicUpdater = Store{}
+var _ gokv.AtomicComparer = Store{}
+var _ gokv.AtomicIncrementer = Store{}

@@ -58,6 +58,13 @@ func TestStoreConcurrent(t *testing.T) {
 	test.TestConcurrentInteractions(t, goroutineCount, store)
 }
 
+// TestAtomicOperations verifies atomic read-modify-write and compare-and-swap.
+func TestAtomicOperations(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+	test.TestAtomicOperations(t, store)
+}
+
 // TestErrors tests some error cases.
 func TestErrors(t *testing.T) {
 	// Test empty key

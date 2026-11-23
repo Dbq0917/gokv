@@ -1,8 +1,12 @@
 package badgerdb
 
 import (
+	"bytes"
+	"errors"
+
 	"github.com/dgraph-io/badger"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -34,6 +38,136 @@ func (s Store) Set(k string, v any) error {
 		return err
 	}
 	return nil
+}
+
+// Update atomically reads, modifies and writes the value for the given key.
+//
+// BadgerDB's transactions detect conflicting writes. If a conflict occurs,
+// Update retries with the latest value, so concurrent increments aren't lost.
+// The update function may be called more than once.
+func (s Store) Update(k string, v any, update gokv.UpdateFunc) error {
+	if err := util.CheckKey(k); err != nil {
+		return err
+	}
+	if err := util.CheckPointer(v); err != nil {
+		return err
+	}
+	if update == nil {
+		return errors.New("the update function is nil")
+	}
+
+	for {
+		err := s.db.Update(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(k))
+			found := err == nil
+			if err != nil && err != badger.ErrKeyNotFound {
+				return err
+			}
+
+			var data []byte
+			if found {
+				data, err = item.ValueCopy(nil)
+				if err != nil {
+					return err
+				}
+			}
+
+			if err := util.ResetPointer(v); err != nil {
+				return err
+			}
+			if found {
+				if err := s.codec.Unmarshal(data, v); err != nil {
+					return err
+				}
+			}
+			if err := update(found); err != nil {
+				return err
+			}
+
+			newData, err := s.codec.Marshal(v)
+			if err != nil {
+				return err
+			}
+			return txn.Set([]byte(k), newData)
+		})
+		if err == badger.ErrConflict {
+			continue
+		}
+		return err
+	}
+}
+
+// CompareAndSwap atomically replaces the value for k if it matches oldValue.
+// A nil oldValue means that k must not exist.
+func (s Store) CompareAndSwap(k string, oldValue, newValue any) (swapped bool, err error) {
+	if err := util.CheckKeyAndValue(k, newValue); err != nil {
+		return false, err
+	}
+	if oldValue != nil {
+		if err := util.CheckVal(oldValue); err != nil {
+			return false, err
+		}
+	}
+
+	var oldData []byte
+	if oldValue != nil {
+		oldData, err = s.codec.Marshal(oldValue)
+		if err != nil {
+			return false, err
+		}
+	}
+	newData, err := s.codec.Marshal(newValue)
+	if err != nil {
+		return false, err
+	}
+
+	for {
+		swapped = false
+		err = s.db.Update(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(k))
+			found := err == nil
+			if err != nil && err != badger.ErrKeyNotFound {
+				return err
+			}
+
+			if oldValue == nil {
+				if found {
+					return nil
+				}
+			} else {
+				if !found {
+					return nil
+				}
+				current, err := item.ValueCopy(nil)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(current, oldData) {
+					return nil
+				}
+			}
+
+			if err := txn.Set([]byte(k), newData); err != nil {
+				return err
+			}
+			swapped = true
+			return nil
+		})
+		if err == badger.ErrConflict {
+			continue
+		}
+		return swapped, err
+	}
+}
+
+// Increment atomically adds delta to the integer value for k.
+// A missing key is treated as zero.
+func (s Store) Increment(k string, delta int64) (value int64, err error) {
+	err = s.Update(k, &value, func(found bool) error {
+		value += delta
+		return nil
+	})
+	return value, err
 }
 
 // Get retrieves the stored value for the given key.
@@ -138,3 +272,7 @@ func NewStore(options Options) (Store, error) {
 
 	return result, nil
 }
+
+var _ gokv.AtomicUpdater = Store{}
+var _ gokv.AtomicComparer = Store{}
+var _ gokv.AtomicIncrementer = Store{}

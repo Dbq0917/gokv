@@ -45,6 +45,46 @@ type Store interface {
 
 There are detailed descriptions of the methods in the [docs](https://pkg.go.dev/badge/github.com/philippgille/gokv#Store) and in the [code](https://github.com/philippgille/gokv/blob/master/store.go). You should read them if you plan to write your own `gokv.Store` implementation or if you create a Go package with a method that takes a `gokv.Store` as parameter, so you know exactly what happens in the background.
 
+### Optional interfaces
+
+Not every backend can provide every stronger consistency guarantee, so optional
+capabilities live in separate interfaces. Stores opt in by implementing them,
+and callers check for the capability before relying on it.
+
+`gokv.AtomicUpdater` adds an atomic read-modify-write operation for a single key:
+
+```go
+type AtomicUpdater interface {
+    Update(k string, v any, update func(found bool) error) error
+}
+```
+
+The implementation reads the latest value into `v`, calls `update`, and stores
+`v` again. If another writer changed the key between the read and the write, the
+store detects the conflict and retries with the latest value. The update function
+must only mutate `v` (and must not have external side effects), because it can be
+called more than once under contention.
+
+This prevents the lost-update problem in counters:
+
+```go
+var calls int
+err := gokv.Update(store, "api-calls", &calls, func(found bool) error {
+    calls++
+    return nil
+})
+```
+
+`gokv.AtomicComparer` adds `CompareAndSwap(k, oldValue, newValue)`, and
+`gokv.AtomicIncrementer` adds `Increment(k, delta)`. The package-level helpers
+`gokv.Update`, `gokv.CompareAndSwap` and `gokv.Increment` return a
+`gokv.ErrAtomic...NotSupported` error instead of silently falling back to a
+non-atomic `Get` + `Set`.
+
+The `gomap`, `syncmap`, `bbolt`, `badgerdb`, `leveldb`, `file` and `redis`
+implementations provide these interfaces. Redis uses `WATCH`/`MULTI`/`EXEC` for
+optimistic concurrency control without requiring a different backend.
+
 ### Implementations
 
 Some of the following databases aren't specifically engineered for storing key-value pairs, but if someone's running them already for other purposes and doesn't want to set up one of the proper key-value stores due to administrative overhead etc., they can of course be used as well. In those cases let's focus on a few of the most popular though. This mostly goes for the SQL, NoSQL and NewSQL categories.

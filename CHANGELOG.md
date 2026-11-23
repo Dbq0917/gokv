@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- Optional `gokv.AtomicUpdater`, `gokv.AtomicComparer` and `gokv.AtomicIncrementer` interfaces for conflict-detecting read-modify-write operations, compare-and-swap, and atomic counters
+- Atomic update implementations for the `gomap`, `syncmap`, `bbolt`, `badgerdb`, `leveldb`, `file` and `redis` stores
+- Redis optimistic concurrency control based on `WATCH`/`MULTI`/`EXEC`, so concurrent increments are retried instead of silently overwriting each other
+- Shared concurrency regression test with two goroutines performing 10,000 increments each
+
 v0.7.0 (2024-01-28)
 -------------------
 

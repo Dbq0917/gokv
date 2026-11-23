@@ -1,11 +1,14 @@
 package file
 
 import (
+	"bytes"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -52,6 +55,123 @@ func (s Store) Set(k string, v any) error {
 	lock.Lock()
 	defer lock.Unlock()
 	return os.WriteFile(filePath, data, 0o600)
+}
+
+// Update atomically reads, modifies and writes the value for the given key.
+//
+// The per-file lock is held for the complete read-modify-write cycle. The
+// update function is called exactly once by this implementation.
+func (s Store) Update(k string, v any, update gokv.UpdateFunc) error {
+	if err := util.CheckKey(k); err != nil {
+		return err
+	}
+	if err := util.CheckPointer(v); err != nil {
+		return err
+	}
+	if update == nil {
+		return errors.New("the update function is nil")
+	}
+
+	escapedKey := url.PathEscape(k)
+	lock := s.prepFileLock(escapedKey)
+
+	filename := escapedKey
+	if s.filenameExtension != "" {
+		filename += "." + s.filenameExtension
+	}
+	filePath := filepath.Clean(s.directory + "/" + filename)
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	data, err := os.ReadFile(filePath)
+	found := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := util.ResetPointer(v); err != nil {
+		return err
+	}
+	if found {
+		if err := s.codec.Unmarshal(data, v); err != nil {
+			return err
+		}
+	}
+	if err := update(found); err != nil {
+		return err
+	}
+
+	newData, err := s.codec.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, newData, 0o600)
+}
+
+// CompareAndSwap atomically replaces the value for k if it matches oldValue.
+// A nil oldValue means that k must not exist.
+func (s Store) CompareAndSwap(k string, oldValue, newValue any) (swapped bool, err error) {
+	if err := util.CheckKeyAndValue(k, newValue); err != nil {
+		return false, err
+	}
+	if oldValue != nil {
+		if err := util.CheckVal(oldValue); err != nil {
+			return false, err
+		}
+	}
+
+	var oldData []byte
+	if oldValue != nil {
+		oldData, err = s.codec.Marshal(oldValue)
+		if err != nil {
+			return false, err
+		}
+	}
+	newData, err := s.codec.Marshal(newValue)
+	if err != nil {
+		return false, err
+	}
+
+	escapedKey := url.PathEscape(k)
+	lock := s.prepFileLock(escapedKey)
+
+	filename := escapedKey
+	if s.filenameExtension != "" {
+		filename += "." + s.filenameExtension
+	}
+	filePath := filepath.Clean(s.directory + "/" + filename)
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, err := os.ReadFile(filePath)
+	found := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if oldValue == nil {
+		if found {
+			return false, nil
+		}
+	} else if !found || !bytes.Equal(current, oldData) {
+		return false, nil
+	}
+
+	if err := os.WriteFile(filePath, newData, 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Increment atomically adds delta to the integer value for k.
+// A missing key is treated as zero.
+func (s Store) Increment(k string, delta int64) (value int64, err error) {
+	err = s.Update(k, &value, func(found bool) error {
+		value += delta
+		return nil
+	})
+	return value, err
 }
 
 // Get retrieves the stored value for the given key.
@@ -201,3 +321,7 @@ func NewStore(options Options) (Store, error) {
 
 	return result, nil
 }
+
+var _ gokv.AtomicUpdater = Store{}
+var _ gokv.AtomicComparer = Store{}
+var _ gokv.AtomicIncrementer = Store{}

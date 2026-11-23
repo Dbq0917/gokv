@@ -57,6 +57,13 @@ func TestClientConcurrent(t *testing.T) {
 	test.TestConcurrentInteractions(t, goroutineCount, client)
 }
 
+// TestAtomicOperations verifies atomic read-modify-write and compare-and-swap.
+func TestAtomicOperations(t *testing.T) {
+	client := createClient(t, encoding.JSON)
+	defer func() { _ = client.Close() }()
+	test.TestAtomicOperations(t, client)
+}
+
 // TestErrors tests some error cases.
 func TestErrors(t *testing.T) {
 	// Test empty key

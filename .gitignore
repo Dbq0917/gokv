@@ -19,3 +19,8 @@ coverage.txt
 /leveldb/leveldb
 
 /examples/examples
+
+# Local Go workspace used to develop/test the multi-module repo together.
+# Not part of any released module.
+go.work
+go.work.sum

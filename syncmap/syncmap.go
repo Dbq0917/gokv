@@ -1,16 +1,20 @@
 package syncmap
 
 import (
+	"bytes"
+	"errors"
 	"sync"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
 
 // Store is a gokv.Store implementation for a Go sync.Map.
 type Store struct {
-	m     *sync.Map
-	codec encoding.Codec
+	m          *sync.Map
+	updateLock *sync.Mutex
+	codec      encoding.Codec
 }
 
 // Set stores the given value for the given key.
@@ -26,8 +30,98 @@ func (s Store) Set(k string, v any) error {
 		return err
 	}
 
+	s.updateLock.Lock()
+	defer s.updateLock.Unlock()
 	s.m.Store(k, data)
 	return nil
+}
+
+// Update atomically reads, modifies and writes the value for the given key.
+//
+// Writes are serialized by a mutex, while reads remain lock-free. The update
+// function is called exactly once by this implementation.
+func (s Store) Update(k string, v any, update gokv.UpdateFunc) error {
+	if err := util.CheckKey(k); err != nil {
+		return err
+	}
+	if err := util.CheckPointer(v); err != nil {
+		return err
+	}
+	if update == nil {
+		return errors.New("the update function is nil")
+	}
+
+	s.updateLock.Lock()
+	defer s.updateLock.Unlock()
+
+	dataInterface, found := s.m.Load(k)
+	if err := util.ResetPointer(v); err != nil {
+		return err
+	}
+	if found {
+		if err := s.codec.Unmarshal(dataInterface.([]byte), v); err != nil {
+			return err
+		}
+	}
+	if err := update(found); err != nil {
+		return err
+	}
+
+	data, err := s.codec.Marshal(v)
+	if err != nil {
+		return err
+	}
+	s.m.Store(k, data)
+	return nil
+}
+
+// CompareAndSwap atomically replaces the value for k if it matches oldValue.
+// A nil oldValue means that k must not exist.
+func (s Store) CompareAndSwap(k string, oldValue, newValue any) (swapped bool, err error) {
+	if err := util.CheckKeyAndValue(k, newValue); err != nil {
+		return false, err
+	}
+	if oldValue != nil {
+		if err := util.CheckVal(oldValue); err != nil {
+			return false, err
+		}
+	}
+
+	var oldData []byte
+	if oldValue != nil {
+		oldData, err = s.codec.Marshal(oldValue)
+		if err != nil {
+			return false, err
+		}
+	}
+	newData, err := s.codec.Marshal(newValue)
+	if err != nil {
+		return false, err
+	}
+
+	s.updateLock.Lock()
+	defer s.updateLock.Unlock()
+
+	currentInterface, found := s.m.Load(k)
+	if oldValue == nil {
+		if found {
+			return false, nil
+		}
+	} else if !found || !bytes.Equal(currentInterface.([]byte), oldData) {
+		return false, nil
+	}
+	s.m.Store(k, newData)
+	return true, nil
+}
+
+// Increment atomically adds delta to the integer value for k.
+// A missing key is treated as zero.
+func (s Store) Increment(k string, delta int64) (value int64, err error) {
+	err = s.Update(k, &value, func(found bool) error {
+		value += delta
+		return nil
+	})
+	return value, err
 }
 
 // Get retrieves the stored value for the given key.
@@ -60,6 +154,8 @@ func (s Store) Delete(k string) error {
 		return err
 	}
 
+	s.updateLock.Lock()
+	defer s.updateLock.Unlock()
 	s.m.Delete(k)
 	return nil
 }
@@ -100,7 +196,12 @@ func NewStore(options Options) Store {
 	}
 
 	return Store{
-		m:     &sync.Map{},
-		codec: options.Codec,
+		m:          &sync.Map{},
+		updateLock: new(sync.Mutex),
+		codec:      options.Codec,
 	}
 }
+
+var _ gokv.AtomicUpdater = Store{}
+var _ gokv.AtomicComparer = Store{}
+var _ gokv.AtomicIncrementer = Store{}
