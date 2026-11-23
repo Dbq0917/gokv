@@ -102,6 +102,16 @@ Again:
 For differences between the implementations, see [Choosing an implementation](docs/choosing-implementation.md).  
 For the Godoc of specific implementations, see <https://pkg.go.dev/github.com/philippgille/gokv#section-directories>.
 
+### Zero-downtime, reversible migration
+
+Moving from a volatile, in-memory store to a persistent one must never cut over before the new backend has durably received *all* data, and it must stay reversible. The `migration` package (`github.com/philippgille/gokv/migration`) provides a `DualStore` that wraps a source and a target store and drives the move in three phases without taking the service offline:
+
+1. **Dual-write**: route traffic through `DualStore`. Every write goes to both backends while reads still come from the source.
+2. **Copy and verify**: `CopyAll` copies pre-existing keys byte-for-byte; `Verify` then confirms both stores hold the same keys with identical bytes. Re-run both until they converge with concurrent writes.
+3. **Commit or roll back**: `Commit` verifies again and refuses to switch while any key is missing or different. The source is kept open so `Rollback` can restore it as primary at any time until you close it.
+
+Stores used in a migration must implement the optional `gokv.ByteStore` and `gokv.IterStore` interfaces. The `syncmap`, `gomap` and `bbolt` implementations do. See the package doc and `migration/migration_test.go` for a worked example that closes and re-opens the on-disk store to prove the data survives a restart.
+
 ### Value types
 
 Most Go packages for key-value stores just accept a `[]byte` as value, which requires developers for example to marshal (and later unmarshal) their structs. `gokv` is meant to be simple and make developers' lifes easier, so it accepts any type (with using `any`/`interface{}` as parameter), including structs, and automatically (un-)marshals the value.
