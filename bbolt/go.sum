@@ -6,6 +6,8 @@ github.com/philippgille/gokv v0.7.0 h1:rQSIQspete82h78Br7k7rKUZ8JYy/hWlwzm/W5qob
 github.com/philippgille/gokv v0.7.0/go.mod h1:OwiTP/3bhEBhSuOmFmq1+rszglfSgjJVxd1HOgOa2N4=
 github.com/philippgille/gokv/encoding v0.7.0 h1:2oxepKzzTsi00iLZBCZ7Rmqrallh9zws3iqSrLGfkgo=
 github.com/philippgille/gokv/encoding v0.7.0/go.mod h1:yncOBBUciyniPI8t5ECF8XSCwhONE9Rjf3My5IHs3fA=
+github.com/philippgille/gokv/noop v0.7.0 h1:JQc5JGzJ23wmFDrw1gB/oc+qIfmPifUPBU+D56XbIQQ=
+github.com/philippgille/gokv/noop v0.7.0/go.mod h1:O0AA4ClBTvuCafm3rvqLGgJ/kR9xFGSj7X9emrPcmEg=
 github.com/philippgille/gokv/test v0.7.0 h1:0wBKnKaFZlSeHxLXcmUJqK//IQGUMeu+o8B876KCiOM=
 github.com/philippgille/gokv/test v0.7.0/go.mod h1:TP/VzO/qAoi6njsfKnRpXKno0hRuzD5wsLnHhtUcVkY=
 github.com/philippgille/gokv/util v0.7.0 h1:5avUK/a3aSj/aWjhHv4/FkqgMon2B7k2BqFgLcR+DYg=

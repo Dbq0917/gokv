@@ -1,13 +1,16 @@
 package badgerdb_test
 
 import (
+	"errors"
 	"log"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/badgerdb"
 	"github.com/philippgille/gokv/encoding"
+	"github.com/philippgille/gokv/noop"
 	"github.com/philippgille/gokv/test"
 )
 
@@ -56,6 +59,64 @@ func TestStoreConcurrent(t *testing.T) {
 	goroutineCount := 1000
 
 	test.TestConcurrentInteractions(t, goroutineCount, store)
+}
+
+// TestSetMulti runs the shared, backend-agnostic batch-write suite against BadgerDB.
+func TestSetMulti(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	test.TestSetMulti(store, t)
+}
+
+// TestSetMultiDurability verifies a successful batch is synced to disk
+// and survives closing and re-opening the BadgerDB directory.
+func TestSetMultiDurability(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+
+	reopen := func() (gokv.Store, error) {
+		return badgerdb.NewStore(badgerdb.Options{
+			Dir:   path,
+			Codec: encoding.JSON,
+		})
+	}
+
+	test.TestSetMultiDurability(store, reopen, t)
+
+	cleanUp(store, path)
+}
+
+// TestSetMultiTooLarge verifies an oversized batch is rejected before any write,
+// because BadgerDB cannot apply it in a single atomic transaction.
+func TestSetMultiTooLarge(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	tooMany := badgerdb.DefaultMaxBatchSize + 1
+	items := make(map[string]any, tooMany)
+	for i := 0; i < tooMany; i++ {
+		items["too-large-"+strconv.Itoa(i)] = test.Foo{Bar: "baz"}
+	}
+
+	err := store.SetMulti(items)
+	if !errors.Is(err, gokv.ErrBatchTooLarge) {
+		t.Fatalf("expected gokv.ErrBatchTooLarge, got: %v", err)
+	}
+
+	// Nothing from the rejected batch may have been written.
+	found, err := store.Get("too-large-0", new(test.Foo))
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if found {
+		t.Error("data was written even though the batch was rejected as too large")
+	}
+}
+
+// TestTrySetMultiUnsupported checks that a store without BatchWriter is rejected
+// before any write happens.
+func TestTrySetMultiUnsupported(t *testing.T) {
+	test.TestTrySetMultiUnsupported(noop.NewStore(), t)
 }
 
 // TestErrors tests some error cases.

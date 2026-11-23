@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- Optional `gokv.BatchWriter` interface with an atomic, durable `SetMulti` method, plus `gokv.TrySetMulti` for up-front capability detection and the sentinel errors `gokv.ErrBatchNotSupported` and `gokv.ErrBatchTooLarge`
+- `SetMulti` implementations for the `bbolt` and `badgerdb` stores, both committing the whole batch in a single transaction so a batch either fully succeeds or leaves the store untouched; `badgerdb` adds an optional `MaxBatchSize` (default `DefaultMaxBatchSize`) that rejects oversized batches before any write
+- Shared, backend-agnostic batch-write test suite in the `test` package (large batch, atomic rollback, durability across re-open, unsupported-store rejection), run by both `bbolt` and `badgerdb`
+
 v0.7.0 (2024-01-28)
 -------------------
 

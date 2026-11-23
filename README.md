@@ -45,6 +45,34 @@ type Store interface {
 
 There are detailed descriptions of the methods in the [docs](https://pkg.go.dev/badge/github.com/philippgille/gokv#Store) and in the [code](https://github.com/philippgille/gokv/blob/master/store.go). You should read them if you plan to write your own `gokv.Store` implementation or if you create a Go package with a method that takes a `gokv.Store` as parameter, so you know exactly what happens in the background.
 
+### Optional interfaces
+
+Not every backend supports every feature, so optional capabilities live in their own interfaces instead of bloating `Store`. Stores opt in by implementing them, and callers check for the capability before using it.
+
+`gokv.BatchWriter` adds atomic, durable batch writes:
+
+```go
+type BatchWriter interface {
+    SetMulti(items map[string]any) error
+}
+```
+
+`SetMulti` has one well-defined semantics that every implementation guarantees, regardless of backend:
+
+- **Atomic** - the whole batch is stored or nothing is. An error never leaves a partial import behind, so the call is safe to retry.
+- **Durable** - on success the batch is committed to the backend's durable storage (fsynced to disk), not just held in memory.
+
+Backends which cannot make these promises deliberately do NOT implement `BatchWriter`; there is no generic fallback that loops over `Set`, because that would silently re-introduce partial writes. Use `gokv.TrySetMulti(store, items)` (or a type assertion) to detect support up front - an unsupported store returns `gokv.ErrBatchNotSupported` before anything is written:
+
+```go
+if err := gokv.TrySetMulti(store, items); errors.Is(err, gokv.ErrBatchNotSupported) {
+    // This backend can't do an atomic batch - handle it explicitly,
+    // don't assume the import succeeded.
+}
+```
+
+Backends with a native transaction size limit (for example BadgerDB) reject oversized batches before writing with `gokv.ErrBatchTooLarge`; split the import into chunks of the backend's limit and retry each chunk. Currently `bbolt` and `badgerdb` implement `BatchWriter`.
+
 ### Implementations
 
 Some of the following databases aren't specifically engineered for storing key-value pairs, but if someone's running them already for other purposes and doesn't want to set up one of the proper key-value stores due to administrative overhead etc., they can of course be used as well. In those cases let's focus on a few of the most popular though. This mostly goes for the SQL, NoSQL and NewSQL categories.

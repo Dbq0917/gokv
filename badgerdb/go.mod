@@ -6,6 +6,7 @@ require (
 	github.com/dgraph-io/badger v1.6.2
 	github.com/philippgille/gokv v0.7.0
 	github.com/philippgille/gokv/encoding v0.7.0
+	github.com/philippgille/gokv/noop v0.7.0
 	github.com/philippgille/gokv/test v0.7.0
 	github.com/philippgille/gokv/util v0.7.0
 )

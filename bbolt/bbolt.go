@@ -3,6 +3,7 @@ package bbolt
 import (
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -37,6 +38,57 @@ func (s Store) Set(k string, v any) error {
 	}
 	return nil
 }
+
+// SetMulti stores the given key-value pairs in a single atomic, durable transaction.
+//
+// All pairs are marshalled and validated before the transaction is opened,
+// so an invalid key/value or a marshalling failure aborts the call before
+// anything is written. The transaction itself applies every Put together:
+// bbolt commits it atomically and fsyncs it to disk, so on success the whole
+// batch is persisted, and on error none of the pairs is visible.
+//
+// bbolt has no batch-size limit, which makes this suitable for large imports.
+// A nil or empty map is a no-op that returns nil.
+func (s Store) SetMulti(items map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Marshal everything up front. This keeps the write transaction short
+	// and guarantees that a marshalling/validation error leaves the store
+	// untouched instead of failing halfway through the batch.
+	type entry struct {
+		key  []byte
+		data []byte
+	}
+	entries := make([]entry, 0, len(items))
+	for k, v := range items {
+		if err := util.CheckKeyAndValue(k, v); err != nil {
+			return err
+		}
+		data, err := s.codec.Marshal(v)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, entry{key: []byte(k), data: data})
+	}
+
+	// One Update transaction applies all puts atomically.
+	// bbolt's commit writes to disk and fsyncs, so a nil error means
+	// the entire batch is durable; a returned error means nothing was stored.
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.bucketName))
+		for _, e := range entries {
+			if err := b.Put(e.key, e.data); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Compile-time assertion that Store implements gokv.BatchWriter.
+var _ gokv.BatchWriter = Store{}
 
 // Get retrieves the stored value for the given key.
 // You need to pass a pointer to the value, so in case of a struct

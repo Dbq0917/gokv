@@ -8,6 +8,7 @@ import (
 	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/bbolt"
 	"github.com/philippgille/gokv/encoding"
+	"github.com/philippgille/gokv/noop"
 	"github.com/philippgille/gokv/test"
 )
 
@@ -56,6 +57,37 @@ func TestStoreConcurrent(t *testing.T) {
 	goroutineCount := 1000
 
 	test.TestConcurrentInteractions(t, goroutineCount, store)
+}
+
+// TestSetMulti runs the shared, backend-agnostic batch-write suite against bbolt.
+func TestSetMulti(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	test.TestSetMulti(store, t)
+}
+
+// TestSetMultiDurability verifies a successful batch is persisted to disk
+// and survives closing and re-opening the bbolt database file.
+func TestSetMultiDurability(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+
+	reopen := func() (gokv.Store, error) {
+		return bbolt.NewStore(bbolt.Options{
+			Path:  path,
+			Codec: encoding.JSON,
+		})
+	}
+
+	test.TestSetMultiDurability(store, reopen, t)
+
+	cleanUp(store, path)
+}
+
+// TestTrySetMultiUnsupported checks that a store without BatchWriter is rejected
+// before any write happens.
+func TestTrySetMultiUnsupported(t *testing.T) {
+	test.TestTrySetMultiUnsupported(noop.NewStore(), t)
 }
 
 // TestErrors tests some error cases.
