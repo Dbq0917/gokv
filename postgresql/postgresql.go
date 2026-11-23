@@ -2,6 +2,7 @@ package postgresql
 
 import (
 	gosql "database/sql"
+	"time"
 
 	// Usually a blank import is enough as it calls the package's init() function and loads the driver,
 	// but we'll use the package's ParseDNS() function so we make this an actual import.
@@ -12,6 +13,11 @@ import (
 )
 
 const defaultDBname = "gokv"
+
+var (
+	defaultConnMaxLifetime = 5 * time.Minute
+	defaultConnMaxIdleTime = 1 * time.Minute
+)
 
 // Client is a gokv.Store implementation for PostgreSQL.
 type Client struct {
@@ -40,17 +46,44 @@ type Options struct {
 	// -1 for no limit. 0 will lead to the default value (100) being set.
 	// Optional (100 by default).
 	MaxOpenConnections int
+	// Maximum number of connections that are kept in the pool for reuse.
+	// If this is lower than MaxOpenConnections, connections above this limit are closed
+	// after each operation instead of being returned to the pool,
+	// so under load almost every operation opens a new connection
+	// (the database/sql package's default of 2 leads to exactly that behaviour).
+	// -1 leads to no connections being kept for reuse. 0 will lead to the default value (100) being set.
+	// Optional (100 by default).
+	MaxIdleConnections int
+	// Maximum amount of time a connection may be reused.
+	// Connections older than this are closed instead of being returned to the pool,
+	// so that connections aren't held onto forever.
+	// Nil leads to the default value (5 minutes) being set.
+	// A pointer to a value <= 0 leads to connections being reused forever.
+	// Optional (5 minutes by default).
+	ConnMaxLifetime *time.Duration
+	// Maximum amount of time a connection may sit idle in the pool.
+	// Connections that were idle for longer are closed,
+	// so that an idle process doesn't keep holding on to server connections
+	// that other processes might need (the server has a hard connection limit).
+	// Nil leads to the default value (1 minute) being set.
+	// A pointer to a value <= 0 leads to connections sitting idle forever.
+	// Optional (1 minute by default).
+	ConnMaxIdleTime *time.Duration
 	// Encoding format.
 	// Optional (encoding.JSON by default).
 	Codec encoding.Codec
 }
 
 // DefaultOptions is an Options object with default values.
-// ConnectionURL: "postgres://postgres@/gokv?sslmode=disable", TableName: "Item", MaxOpenConnections: 100, Codec: encoding.JSON
+// ConnectionURL: "postgres://postgres@/gokv?sslmode=disable", TableName: "Item", MaxOpenConnections: 100,
+// MaxIdleConnections: 100, ConnMaxLifetime: 5 minutes, ConnMaxIdleTime: 1 minute, Codec: encoding.JSON
 var DefaultOptions = Options{
 	ConnectionURL:      "postgres://postgres@/" + defaultDBname + "?sslmode=disable",
 	TableName:          "Item",
 	MaxOpenConnections: 100,
+	MaxIdleConnections: 100,
+	ConnMaxLifetime:    &defaultConnMaxLifetime,
+	ConnMaxIdleTime:    &defaultConnMaxIdleTime,
 	Codec:              encoding.JSON,
 }
 
@@ -73,6 +106,18 @@ func NewClient(options Options) (Client, error) {
 	case -1:
 		options.MaxOpenConnections = 0 // 0 actually leads to the PostgreSQL driver using no connection limit.
 	}
+	switch options.MaxIdleConnections {
+	case 0:
+		options.MaxIdleConnections = DefaultOptions.MaxIdleConnections
+	case -1:
+		options.MaxIdleConnections = 0 // 0 actually leads to no connections being kept in the pool for reuse.
+	}
+	if options.ConnMaxLifetime == nil {
+		options.ConnMaxLifetime = DefaultOptions.ConnMaxLifetime
+	}
+	if options.ConnMaxIdleTime == nil {
+		options.ConnMaxIdleTime = DefaultOptions.ConnMaxIdleTime
+	}
 	if options.Codec == nil {
 		options.Codec = DefaultOptions.Codec
 	}
@@ -90,6 +135,14 @@ func NewClient(options Options) (Client, error) {
 	// Limit number of concurrent connections. Typical max connections on a PostgreSQL server is 100.
 	// This prevents "Error 1040: Too many connections", which otherwise occurs for example with 500 concurrent goroutines.
 	db.SetMaxOpenConns(options.MaxOpenConnections)
+	// Keep connections in the pool so that they're reused for subsequent operations
+	// instead of a new connection being opened for (almost) every operation.
+	db.SetMaxIdleConns(options.MaxIdleConnections)
+	// Recycle connections that were reused for a long time
+	// and close connections that sat idle for a while,
+	// so that a process doesn't hold on to server connections forever.
+	db.SetConnMaxLifetime(*options.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(*options.ConnMaxIdleTime)
 
 	// Create table if it doesn't exist yet.
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS " + options.TableName + " (k TEXT PRIMARY KEY, v BYTEA NOT NULL)")

@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- New options `MaxIdleConnections`, `ConnMaxLifetime` and `ConnMaxIdleTime` for the `mysql`, `postgresql` and `cockroachdb` store implementations
+
+### Fixed
+
+- The `mysql`, `postgresql` and `cockroachdb` store implementations barely reused connections, because the `database/sql` package's default of 2 idle connections was kept, so under load almost every operation opened a new connection (and closed it again right after), which could exhaust the server's connection limit and lead to errors like "Error 1040: Too many connections". Now up to `MaxIdleConnections` (100 by default) connections are kept in the pool for reuse, while `ConnMaxLifetime` (5 minutes by default) and `ConnMaxIdleTime` (1 minute by default) make sure that connections aren't held onto forever.
+
 v0.7.0 (2024-01-28)
 -------------------
 
