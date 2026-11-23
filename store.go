@@ -38,3 +38,45 @@ type Store interface {
 	// is passed to your method, so you should always call it.
 	Close() error
 }
+
+// BatchDeleter is an optional interface that a gokv.Store implementation
+// can implement to delete multiple key-value pairs in a single operation.
+//
+// The operation MUST be atomic: Either all given key-value pairs are deleted,
+// or none of them are. If the method returns an error, no key-value pair
+// was deleted. This makes the method safe to use for cleanup jobs that must
+// not leave a half-deleted state behind when the backend fails midway.
+//
+// Implementations MUST NOT emulate atomicity on backends that don't provide
+// it natively (for example via a single transaction or a single atomic batch
+// write), because emulations like locking the store and deleting key-value
+// pairs one by one would still leave a partial state behind on failure,
+// and holding long locks can overload an already slow backend.
+// An implementation that cannot guarantee atomicity must simply not
+// implement this interface.
+//
+// Because not every gokv.Store implementation supports atomic batch deletes,
+// callers must check for support before relying on it, for example:
+//
+//	if batchDeleter, ok := store.(gokv.BatchDeleter); ok {
+//		err := batchDeleter.DeleteBatch(keys) // atomic
+//	} else {
+//		// The store doesn't support atomic batch deletes.
+//		// Fall back to deleting key-value pairs one by one
+//		// and handle partial failures yourself.
+//	}
+//
+// Note: Implementations typically execute the batch as a single transaction,
+// so very large batches may fail as a whole (for example when exceeding a
+// maximum transaction size). Atomicity still holds in that case. Callers may
+// split a huge batch into smaller chunks, but then atomicity only holds
+// per chunk.
+type BatchDeleter interface {
+	// DeleteBatch deletes the stored values for the given keys.
+	// Either all key-value pairs are deleted or none of them are.
+	// Deleting non-existing key-value pairs does NOT lead to an error.
+	// An empty slice is a no-op and does NOT lead to an error.
+	// Keys must not be "". If any key is "", an error is returned
+	// and no key-value pair is deleted.
+	DeleteBatch(keys []string) error
+}

@@ -305,6 +305,103 @@ func handleGetError(t *testing.T, err error, found bool) {
 	}
 }
 
+// TestBatchDeleter tests if deleting multiple key-value pairs in a single batch works properly,
+// including the atomicity guarantee of the gokv.BatchDeleter interface:
+// When the batch fails, no key-value pair of the batch may be deleted.
+// The store must implement gokv.BatchDeleter, otherwise the test fails.
+func TestBatchDeleter(store gokv.Store, t *testing.T) {
+	batchDeleter, ok := store.(gokv.BatchDeleter)
+	if !ok {
+		t.Fatal("The store doesn't implement gokv.BatchDeleter")
+	}
+
+	// Use keys with a common prefix, as batch deletes are typically used
+	// to clean up a group of related key-value pairs.
+	prefix := "batchdel-" + strconv.FormatInt(rand.Int63(), 10) + "-"
+	keyCount := 10
+	keys := make([]string, keyCount)
+	for i := 0; i < keyCount; i++ {
+		keys[i] = prefix + strconv.Itoa(i)
+	}
+	// A control key outside of the batch, which must never be touched.
+	controlKey := prefix + "control"
+
+	setAll := func() {
+		for _, key := range keys {
+			err := store.Set(key, "bar")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := store.Set(controlKey, "bar")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// countRemaining returns the number of the batch keys that still exist in the store.
+	countRemaining := func() int {
+		remaining := 0
+		for _, key := range keys {
+			found, err := store.Get(key, new(string))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found {
+				remaining++
+			}
+		}
+		return remaining
+	}
+
+	// Deleting non-existing key-value pairs in a batch should NOT lead to an error
+	err := batchDeleter.DeleteBatch(keys)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// An empty batch should NOT lead to an error
+	err = batchDeleter.DeleteBatch([]string{})
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Happy path: A full batch is deleted at once
+	setAll()
+	err = batchDeleter.DeleteBatch(keys)
+	if err != nil {
+		t.Error(err)
+	}
+	if remaining := countRemaining(); remaining != 0 {
+		t.Errorf("Expected no key-value pairs to remain after the batch delete, but %v remained", remaining)
+	}
+	// The control key-value pair must still exist
+	found, err := store.Get(controlKey, new(string))
+	if err != nil {
+		t.Error(err)
+	}
+	if !found {
+		t.Error("The control key-value pair was deleted, but it wasn't part of the batch")
+	}
+
+	// Failure case: A batch containing an invalid key must fail
+	// and leave ALL key-value pairs of the batch untouched (atomicity).
+	setAll()
+	invalidBatch := make([]string, 0, len(keys)+1)
+	// Put the invalid key in the middle of the batch, so that an implementation
+	// that deletes one by one would already have deleted some key-value pairs
+	// when encountering it.
+	invalidBatch = append(invalidBatch, keys[:keyCount/2]...)
+	invalidBatch = append(invalidBatch, "")
+	invalidBatch = append(invalidBatch, keys[keyCount/2:]...)
+	err = batchDeleter.DeleteBatch(invalidBatch)
+	if err == nil {
+		t.Error("Expected an error for a batch containing an empty key, but got none")
+	}
+	if remaining := countRemaining(); remaining != keyCount {
+		t.Errorf("Expected all %v key-value pairs to remain after the failed batch delete, but only %v remained", keyCount, remaining)
+	}
+}
+
 // TestConcurrentInteractions launches a bunch of goroutines that concurrently work with the store.
 func TestConcurrentInteractions(t *testing.T, goroutineCount int, store gokv.Store) {
 	waitGroup := sync.WaitGroup{}

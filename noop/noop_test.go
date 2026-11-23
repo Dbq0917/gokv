@@ -29,6 +29,10 @@ func TestNop(t *testing.T) {
 		t.Error(err)
 	}
 
+	if err := s.(gokv.BatchDeleter).DeleteBatch([]string{"foo", "bar"}); err != nil {
+		t.Error(err)
+	}
+
 	if err := s.Close(); err != nil {
 		t.Error(err)
 	}
@@ -69,6 +73,13 @@ func TestInputValidation(t *testing.T) {
 	{
 		err := s.Delete("")
 		assertEqualError(t, err, errInvalidKey)
+	}
+
+	{
+		err := s.(gokv.BatchDeleter).DeleteBatch([]string{"foo", ""})
+		if err == nil {
+			t.Error("expect error, got nil")
+		}
 	}
 }
 

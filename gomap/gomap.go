@@ -71,6 +71,30 @@ func (s Store) Delete(k string) error {
 	return nil
 }
 
+// DeleteBatch deletes the stored values for the given keys.
+// All key-value pairs are deleted while holding a single lock,
+// and deleting from a Go map cannot fail,
+// so either all of them are deleted or none of them are.
+// Deleting non-existing key-value pairs does NOT lead to an error.
+// Keys must not be "". If any key is "", an error is returned
+// and no key-value pair is deleted.
+func (s Store) DeleteBatch(keys []string) error {
+	// Validate all keys before deleting,
+	// so that an invalid key can't lead to a partial delete.
+	for _, k := range keys {
+		if err := util.CheckKey(k); err != nil {
+			return err
+		}
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for _, k := range keys {
+		delete(s.m, k)
+	}
+	return nil
+}
+
 // Close closes the store.
 // When called, the store's internal Go map's entries are deleted.
 func (s Store) Close() error {

@@ -32,6 +32,17 @@ func (s Store) Delete(k string) error {
 	return nil
 }
 
+// DeleteBatch pretends it deletes the keys. Always return nil error unless any key is invalid.
+func (s Store) DeleteBatch(keys []string) error {
+	for _, k := range keys {
+		if err := util.CheckKey(k); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Close pretends it closes the store. Always return nil error.
 func (s Store) Close() error {
 	return nil

@@ -77,6 +77,35 @@ func (s Store) Delete(k string) error {
 	return s.db.Delete([]byte(k), writeOptions)
 }
 
+// DeleteBatch deletes the stored values for the given keys.
+// All key-value pairs are deleted in a single atomic LevelDB batch write,
+// so either all of them are deleted or none of them are.
+// Deleting non-existing key-value pairs does NOT lead to an error.
+// Keys must not be "". If any key is "", an error is returned
+// and no key-value pair is deleted.
+func (s Store) DeleteBatch(keys []string) error {
+	// Validate all keys before building the batch,
+	// so that an invalid key can't lead to a partial delete.
+	for _, k := range keys {
+		if err := util.CheckKey(k); err != nil {
+			return err
+		}
+	}
+
+	var writeOptions *opt.WriteOptions
+	if s.writeSync {
+		writeOptions = &opt.WriteOptions{
+			Sync: true,
+		}
+	}
+	batch := new(leveldb.Batch)
+	for _, k := range keys {
+		batch.Delete([]byte(k))
+	}
+	// Write applies the whole batch atomically.
+	return s.db.Write(batch, writeOptions)
+}
+
 // Close closes the store.
 // It must be called to releases any outstanding snapshots,
 // abort any in-flight compactions and discard open transactions.

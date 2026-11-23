@@ -58,6 +58,14 @@ func TestStoreConcurrent(t *testing.T) {
 	test.TestConcurrentInteractions(t, goroutineCount, store)
 }
 
+// TestBatchDeleter tests if deleting multiple key-value pairs in a single batch works properly,
+// including the atomicity guarantee of the gokv.BatchDeleter interface.
+func TestBatchDeleter(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+	test.TestBatchDeleter(store, t)
+}
+
 // TestErrors tests some error cases.
 func TestErrors(t *testing.T) {
 	// Test empty key

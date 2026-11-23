@@ -90,6 +90,34 @@ func (s Store) Delete(k string) error {
 	})
 }
 
+// DeleteBatch deletes the stored values for the given keys.
+// All key-value pairs are deleted in a single bbolt transaction,
+// so either all of them are deleted or none of them are.
+// Deleting non-existing key-value pairs does NOT lead to an error.
+// Keys must not be "". If any key is "", an error is returned
+// and no key-value pair is deleted.
+func (s Store) DeleteBatch(keys []string) error {
+	// Validate all keys before starting the transaction,
+	// so that an invalid key can't lead to a partial delete.
+	for _, k := range keys {
+		if err := util.CheckKey(k); err != nil {
+			return err
+		}
+	}
+
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.bucketName))
+		for _, k := range keys {
+			if err := b.Delete([]byte(k)); err != nil {
+				// Returning an error rolls back the transaction,
+				// so no key-value pair is deleted.
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // Close closes the store.
 // It must be called to make sure that all open transactions finish and to release all DB resources.
 func (s Store) Close() error {

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- New optional interface `gokv.BatchDeleter` with a `DeleteBatch([]string) error` method for deleting multiple key-value pairs in a single atomic operation (either all or none are deleted)
+  - Implemented for the `badgerdb`, `bbolt`, `gomap`, `leveldb`, `noop` and `syncmap` store implementations
+  - Implementations whose backend doesn't support atomic batch deletes don't implement the interface, so callers can check for support via type assertion before relying on the atomicity guarantee
+
 v0.7.0 (2024-01-28)
 -------------------
 
