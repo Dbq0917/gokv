@@ -3,6 +3,7 @@ module github.com/philippgille/gokv/consul
 go 1.23.8
 
 require (
+	github.com/philippgille/gokv v0.7.0
 	github.com/hashicorp/consul/api v1.32.1
 	github.com/philippgille/gokv/encoding v0.7.0
 	github.com/philippgille/gokv/test v0.7.0
@@ -25,7 +26,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
-	github.com/philippgille/gokv v0.7.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 )

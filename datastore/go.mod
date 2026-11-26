@@ -3,6 +3,7 @@ module github.com/philippgille/gokv/datastore
 go 1.23.0
 
 require (
+	github.com/philippgille/gokv v0.7.0
 	cloud.google.com/go/datastore v1.20.0
 	github.com/philippgille/gokv/encoding v0.7.0
 	github.com/philippgille/gokv/test v0.7.0
@@ -22,7 +23,6 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.2 // indirect
-	github.com/philippgille/gokv v0.7.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect

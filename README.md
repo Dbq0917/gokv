@@ -40,6 +40,7 @@ type Store interface {
     Get(k string, v any) (found bool, err error)
     Delete(k string) error
     Close() error
+    Iterate(keyPrefix string) (Iterator, error)
 }
 ```
 

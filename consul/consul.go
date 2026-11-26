@@ -1,8 +1,11 @@
 package consul
 
 import (
+	"strings"
+
 	"github.com/hashicorp/consul/api"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -88,6 +91,84 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 // In the Consul implementation this doesn't have any effect.
 func (c Client) Close() error {
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a consistent snapshot of the store
+// (a single Consul list request, which doesn't block writers),
+// so entries that are created or deleted while the iteration is in progress are not returned,
+// and entries are never returned multiple times or skipped.
+// Note: Consul doesn't allow streaming key-value pairs one by one,
+// so all matching key-value pairs are loaded into memory when Iterate is called.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	listPrefix := keyPrefix
+	if c.folder != "" {
+		listPrefix = c.folder + "/" + keyPrefix
+	}
+	kvPairs, _, err := c.c.List(listPrefix, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]keyValuePair, 0, len(kvPairs))
+	for _, kvPair := range kvPairs {
+		key := kvPair.Key
+		if c.folder != "" {
+			key = strings.TrimPrefix(key, c.folder+"/")
+		}
+		entries = append(entries, keyValuePair{
+			key:   key,
+			value: kvPair.Value,
+		})
+	}
+
+	return &iterator{
+		entries: entries,
+		codec:   c.codec,
+		idx:     -1,
+	}, nil
+}
+
+type keyValuePair struct {
+	key   string
+	value []byte
+}
+
+type iterator struct {
+	entries []keyValuePair
+	codec   encoding.Codec
+	idx     int
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.idx++
+	return i.idx < len(i.entries)
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.entries[i.idx].key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.codec.Unmarshal(i.entries[i.idx].value, v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

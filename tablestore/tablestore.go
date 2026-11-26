@@ -7,11 +7,16 @@ import (
 
 	"github.com/aliyun/aliyun-tablestore-go-sdk/tablestore"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
 
 var keyAttrName = "k"
+
+// iterateLimit is the maximum number of rows that are read from the server at once
+// while iterating over the store.
+const iterateLimit = 100
 
 // Client is a gokv.Store implementation for Table Store.
 type Client struct {
@@ -133,6 +138,130 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 // In the Table Store implementation this doesn't have any effect.
 func (c Client) Close() error {
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the rows page by page via Table Store's GetRange operation,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	startPrimaryKeyColumn := &tablestore.PrimaryKeyColumn{
+		ColumnName: keyAttrName,
+		Value:      keyPrefix,
+	}
+	if keyPrefix == "" {
+		startPrimaryKeyColumn = &tablestore.PrimaryKeyColumn{
+			ColumnName:       keyAttrName,
+			PrimaryKeyOption: tablestore.MIN,
+		}
+	}
+
+	return &iterator{
+		client: c,
+		getRangeRequest: tablestore.GetRangeRequest{
+			RangeRowQueryCriteria: &tablestore.RangeRowQueryCriteria{
+				TableName:    c.tableName,
+				ColumnsToGet: []string{"v"},
+				MaxVersion:   1,
+				Direction:    tablestore.FORWARD,
+				Limit:        iterateLimit,
+				StartPrimaryKey: &tablestore.PrimaryKey{
+					PrimaryKeys: []*tablestore.PrimaryKeyColumn{startPrimaryKeyColumn},
+				},
+				EndPrimaryKey: &tablestore.PrimaryKey{
+					PrimaryKeys: []*tablestore.PrimaryKeyColumn{{
+						ColumnName:       keyAttrName,
+						PrimaryKeyOption: tablestore.MAX,
+					}},
+				},
+			},
+		},
+		keyPrefix: keyPrefix,
+		first:     true,
+	}, nil
+}
+
+type iterator struct {
+	client          Client
+	getRangeRequest tablestore.GetRangeRequest
+	keyPrefix       string
+	rows            []*tablestore.Row
+	key             string
+	value           []byte
+	err             error
+	first           bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for {
+		if len(i.rows) > 0 {
+			row := i.rows[0]
+			i.rows = i.rows[1:]
+			if row.PrimaryKey == nil || len(row.PrimaryKey.PrimaryKeys) == 0 || len(row.Columns) == 0 {
+				continue
+			}
+			key, ok := row.PrimaryKey.PrimaryKeys[0].Value.(string)
+			if !ok {
+				i.err = errors.New("the primary key of a row was expected to be a string, but wasn't")
+				return false
+			}
+			if !strings.HasPrefix(key, i.keyPrefix) {
+				// The rows are ordered by key, so no row with the prefix will follow.
+				return false
+			}
+			value, ok := row.Columns[0].Value.([]byte)
+			if !ok {
+				i.err = errors.New("the value of a row was expected to be a slice of bytes, but wasn't")
+				return false
+			}
+			i.key = key
+			i.value = value
+			return true
+		}
+		if !i.first && i.getRangeRequest.RangeRowQueryCriteria.StartPrimaryKey == nil {
+			return false
+		}
+		i.first = false
+		getRangeResponse, err := i.client.c.GetRange(&i.getRangeRequest)
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.rows = getRangeResponse.Rows
+		i.getRangeRequest.RangeRowQueryCriteria.StartPrimaryKey = getRangeResponse.NextStartPrimaryKey
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.client.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

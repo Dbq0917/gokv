@@ -46,6 +46,14 @@ func TestClient(t *testing.T) {
 
 var i int
 
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+func TestIterate(t *testing.T) {
+	client := createClient(t, encoding.JSON)
+	defer func() { _ = client.Close() }()
+
+	test.TestIterate(client, t)
+}
+
 func createClient(t *testing.T, codec encoding.Codec) *pgx.Client {
 	options := pgx.Options{
 		Codec:     codec,

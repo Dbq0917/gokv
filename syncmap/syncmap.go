@@ -1,8 +1,10 @@
 package syncmap
 
 import (
+	"strings"
 	"sync"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -74,6 +76,79 @@ func (s Store) Close() error {
 	// but not here, because without a lock new entries could be added while iterating.
 	// Introducing a lock would work but make the syncmap useless.
 	// s.m = nil
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the entries one by one via sync.Map's Range method,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	i := &iterator{
+		store: s,
+		keys:  make(chan string),
+		done:  make(chan struct{}),
+	}
+
+	// sync.Map doesn't provide a snapshot or cursor,
+	// so we stream the keys from its Range method through a channel.
+	go func() {
+		defer close(i.keys)
+		s.m.Range(func(k, _ any) bool {
+			key := k.(string)
+			if !strings.HasPrefix(key, keyPrefix) {
+				return true
+			}
+			select {
+			case i.keys <- key:
+				return true
+			case <-i.done:
+				return false
+			}
+		})
+	}()
+
+	return i, nil
+}
+
+type iterator struct {
+	store Store
+	keys  chan string
+	done  chan struct{}
+	key   string
+	ok    bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.key, i.ok = <-i.keys
+	return i.ok
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.store.Get(i.key, v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close stops the goroutine that streams the keys, in case the iteration isn't finished yet.
+func (i *iterator) Close() error {
+	select {
+	case <-i.done:
+	default:
+		close(i.done)
+	}
 	return nil
 }
 

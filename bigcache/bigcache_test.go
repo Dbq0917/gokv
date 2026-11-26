@@ -44,6 +44,13 @@ func TestTypes(t *testing.T) {
 	})
 }
 
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+func TestIterate(t *testing.T) {
+	store := createStore(t, encoding.JSON)
+
+	test.TestIterate(store, t)
+}
+
 // TestStoreConcurrent launches a bunch of goroutines that concurrently work with one store.
 func TestStoreConcurrent(t *testing.T) {
 	store := createStore(t, encoding.JSON)

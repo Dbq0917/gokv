@@ -7,6 +7,7 @@ import (
 
 	"github.com/samuel/go-zookeeper/zk"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -86,6 +87,73 @@ func (c Client) Delete(k string) error {
 // It must be called to close the underlying ZooKeeper client.
 func (c Client) Close() error {
 	c.c.Close()
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on the list of znodes below the path prefix at the time of the call,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+// Note: Apache ZooKeeper doesn't allow streaming znode names one by one,
+// so all znode names (but not their values) are loaded into memory when Iterate is called.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	// The znode for a key is "<PathPrefix><key>", so the znodes for keys with the
+	// given prefix are the children of the parent path of "<PathPrefix><keyPrefix>"
+	// whose name starts with the remainder.
+	fullPrefix := c.pathPrefix + keyPrefix
+	parentPath := fullPrefix[:strings.LastIndex(fullPrefix, "/")+1]
+	nodeNamePrefix := fullPrefix[len(parentPath):]
+
+	children, _, err := c.c.Children(parentPath)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(children))
+	for _, child := range children {
+		if strings.HasPrefix(child, nodeNamePrefix) {
+			keys = append(keys, strings.TrimPrefix(parentPath+child, c.pathPrefix))
+		}
+	}
+
+	return &iterator{
+		client: c,
+		keys:   keys,
+		idx:    -1,
+	}, nil
+}
+
+type iterator struct {
+	client Client
+	keys   []string
+	idx    int
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.idx++
+	return i.idx < len(i.keys)
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.keys[i.idx]
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.keys[i.idx], v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

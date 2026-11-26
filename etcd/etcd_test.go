@@ -45,6 +45,14 @@ func TestTypes(t *testing.T) {
 	})
 }
 
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+func TestIterate(t *testing.T) {
+	client := createClient(t, encoding.JSON)
+	defer func() { _ = client.Close() }()
+
+	test.TestIterate(client, t)
+}
+
 // TestClientConcurrent launches a bunch of goroutines that concurrently work with the etcd client.
 func TestClientConcurrent(t *testing.T) {
 	// This test always works locally, but depending on the time of day, maybe

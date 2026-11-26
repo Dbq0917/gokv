@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"regexp"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -9,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -128,6 +130,78 @@ func (c Client) Delete(k string) error {
 func (c Client) Close() error {
 	c.cancel()
 	return c.client.Disconnect(context.Background())
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the documents batch by batch via a MongoDB cursor,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$regex", Value: "^" + regexp.QuoteMeta(keyPrefix)}}}}
+	cursor, err := c.c.Find(context.Background(), filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		cursor: cursor,
+		codec:  c.codec,
+	}, nil
+}
+
+type iterator struct {
+	cursor *mongo.Cursor
+	codec  encoding.Codec
+	key    string
+	value  []byte
+	err    error
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	if !i.cursor.Next(context.Background()) {
+		i.err = i.cursor.Err()
+		return false
+	}
+	var item item
+	if err := i.cursor.Decode(&item); err != nil {
+		i.err = err
+		return false
+	}
+	i.key = item.K
+	i.value = item.V
+	return true
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close closes the cursor that backs the iterator.
+func (i *iterator) Close() error {
+	return i.cursor.Close(context.Background())
 }
 
 // Options are the options for the MongoDB client.

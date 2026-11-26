@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	awsdynamodb "github.com/aws/aws-sdk-go/service/dynamodb"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -120,6 +122,101 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 // In the DynamoDB implementation this doesn't have any effect.
 func (c Client) Close() error {
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the items page by page via DynamoDB's Scan operation,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		client: c,
+		scanInput: awsdynamodb.ScanInput{
+			TableName: &c.tableName,
+		},
+		keyPrefix: keyPrefix,
+		first:     true,
+	}, nil
+}
+
+type iterator struct {
+	client    Client
+	scanInput awsdynamodb.ScanInput
+	keyPrefix string
+	items     []map[string]*awsdynamodb.AttributeValue
+	key       string
+	value     []byte
+	err       error
+	first     bool
+	done      bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil || i.done {
+		return false
+	}
+
+	for {
+		if len(i.items) > 0 {
+			item := i.items[0]
+			i.items = i.items[1:]
+			keyAttr := item[keyAttrName]
+			valAttr := item[valAttrName]
+			if keyAttr == nil || valAttr == nil {
+				continue
+			}
+			key := *keyAttr.S
+			if !strings.HasPrefix(key, i.keyPrefix) {
+				continue
+			}
+			i.key = key
+			i.value = valAttr.B
+			return true
+		}
+		if i.done {
+			return false
+		}
+		if !i.first && i.scanInput.ExclusiveStartKey == nil {
+			i.done = true
+			return false
+		}
+		i.first = false
+		scanOutput, err := i.client.c.Scan(&i.scanInput)
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.items = scanOutput.Items
+		i.scanInput.ExclusiveStartKey = scanOutput.LastEvaluatedKey
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.client.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

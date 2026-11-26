@@ -3,11 +3,14 @@ package datastore
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/datastore"
+	googleiterator "google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -109,6 +112,73 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 func (c Client) Close() error {
 	return c.c.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the keys via a keys-only Cloud Datastore query,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	query := datastore.NewQuery(kind).KeysOnly()
+
+	return &iterator{
+		client:    c,
+		iterator:  c.c.Run(context.Background(), query),
+		keyPrefix: keyPrefix,
+	}, nil
+}
+
+type iterator struct {
+	client    Client
+	iterator  *datastore.Iterator
+	keyPrefix string
+	key       string
+	err       error
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for {
+		key, err := i.iterator.Next(nil)
+		if err == googleiterator.Done {
+			return false
+		} else if err != nil {
+			i.err = err
+			return false
+		}
+		if !strings.HasPrefix(key.Name, i.keyPrefix) {
+			continue
+		}
+		i.key = key.Name
+		return true
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.key, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
+	return nil
 }
 
 // Options are the options for the Cloud Datastore client.

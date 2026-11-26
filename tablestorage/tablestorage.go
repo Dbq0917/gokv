@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/storage"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -132,6 +134,100 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 // In the Table Storage implementation this doesn't have any effect.
 func (c Client) Close() error {
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the entities page by page via a table query,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		client:    c,
+		keyPrefix: keyPrefix,
+		first:     true,
+	}, nil
+}
+
+type iterator struct {
+	client    Client
+	keyPrefix string
+	result    *storage.EntityQueryResult
+	key       string
+	value     []byte
+	err       error
+	first     bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for {
+		if i.result != nil && len(i.result.Entities) > 0 {
+			entity := i.result.Entities[0]
+			i.result.Entities = i.result.Entities[1:]
+			if !strings.HasPrefix(entity.RowKey, i.keyPrefix) {
+				continue
+			}
+			val, ok := entity.Properties[valAttrName]
+			if !ok {
+				continue
+			}
+			data, ok := val.([]byte)
+			if !ok {
+				i.err = fmt.Errorf("the value belonging to the key was expected to be a slice of bytes, but wasn't. Key: %v", entity.RowKey)
+				return false
+			}
+			i.key = entity.RowKey
+			i.value = data
+			return true
+		}
+		if i.result != nil && i.result.NextLink == nil {
+			return false
+		}
+		var result *storage.EntityQueryResult
+		var err error
+		if i.first {
+			result, err = i.client.c.QueryEntities(opTimeout, storage.FullMetadata, nil)
+			i.first = false
+		} else {
+			result, err = i.result.NextResults(nil)
+		}
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.result = result
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.client.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

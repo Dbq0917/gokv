@@ -2,10 +2,12 @@ package bigcache
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/allegro/bigcache/v3"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -76,6 +78,77 @@ func (s Store) Delete(k string) error {
 // When called, the cache is left for removal by the garbage collector.
 func (s Store) Close() error {
 	return s.s.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the entries one by one via BigCache's iterator,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned.
+// Because BigCache keeps stale copies of overwritten entries until they are evicted,
+// the iterator keeps track of the keys it already returned (in memory) to never return an entry multiple times.
+// The store is not locked while you work with the iterator.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		store:     s,
+		iterator:  s.s.Iterator(),
+		keyPrefix: keyPrefix,
+		seen:      make(map[string]struct{}),
+	}, nil
+}
+
+type iterator struct {
+	store     Store
+	iterator  *bigcache.EntryInfoIterator
+	keyPrefix string
+	seen      map[string]struct{}
+	key       string
+	err       error
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for i.iterator.SetNext() {
+		entryInfo, err := i.iterator.Value()
+		if err != nil {
+			i.err = err
+			return false
+		}
+		key := entryInfo.Key()
+		if !strings.HasPrefix(key, i.keyPrefix) {
+			continue
+		}
+		if _, ok := i.seen[key]; ok {
+			continue
+		}
+		i.seen[key] = struct{}{}
+		i.key = key
+		return true
+	}
+	return false
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.store.Get(i.key, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
+	return nil
 }
 
 // Options are the options for the BigCache store.

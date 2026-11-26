@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- New `Iterate` method on the `gokv.Store` interface that returns a `gokv.Iterator` for streaming the key-value pairs whose key starts with a given prefix, one at a time, without loading all of them into memory at once
+  - Implemented for all store implementations, except `memcached`, whose server doesn't allow listing keys - it returns an error wrapping the new `gokv.ErrIterationNotSupported` sentinel error instead of an empty result
+  - New `test.TestIterate()` helper that writes a batch of key-value pairs, iterates over them and checks the count and content of the iterated entries
+
 v0.7.0 (2024-01-28)
 -------------------
 

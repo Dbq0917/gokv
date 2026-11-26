@@ -1,6 +1,7 @@
 package test
 
 import (
+	"errors"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -328,6 +329,94 @@ func TestConcurrentInteractions(t *testing.T, goroutineCount int, store gokv.Sto
 		actual := *actualPtr
 		if actual != expected {
 			t.Errorf("Expected: %v, but was: %v", expected, actual)
+		}
+	}
+}
+
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+// It writes a batch of key-value pairs, iterates over them via their common key prefix
+// and checks if the number and content of the iterated entries match the written ones.
+// Stores that don't support iteration are skipped.
+func TestIterate(store gokv.Store, t *testing.T) {
+	// Use a random prefix so the test is independent of other entries in the store.
+	prefix := "TestIterate_" + strconv.FormatInt(rand.Int63(), 10) + "_"
+	keyCount := 10
+	expectedValue := Foo{
+		Bar: "baz",
+	}
+
+	expectedKeys := make(map[string]struct{}, keyCount)
+	for i := 0; i < keyCount; i++ {
+		key := prefix + strconv.Itoa(i)
+		err := store.Set(key, expectedValue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedKeys[key] = struct{}{}
+	}
+	// Another key-value pair with a different prefix must not show up in the iteration.
+	otherKey := "TestIterateOther_" + strconv.FormatInt(rand.Int63(), 10)
+	err := store.Set(otherKey, expectedValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for key := range expectedKeys {
+			if err := store.Delete(key); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := store.Delete(otherKey); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	iterator, err := store.Iterate(prefix)
+	if errors.Is(err, gokv.ErrIterationNotSupported) {
+		t.Skip("iteration is not supported by this store implementation")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := iterator.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	actualKeys := make(map[string]struct{}, keyCount)
+	for iterator.Next() {
+		key := iterator.Key()
+		if _, ok := expectedKeys[key]; !ok {
+			t.Errorf("Iterated key %q was not expected", key)
+		}
+		if _, ok := actualKeys[key]; ok {
+			t.Errorf("Key %q was returned multiple times", key)
+		}
+		actualKeys[key] = struct{}{}
+
+		actualValuePtr := new(Foo)
+		found, err := iterator.Value(actualValuePtr)
+		if err != nil {
+			t.Error(err)
+		}
+		if !found {
+			t.Errorf("No value was found for key %q, but should have been", key)
+		}
+		if *actualValuePtr != expectedValue {
+			t.Errorf("Expected value %v for key %q, but was %v", expectedValue, key, *actualValuePtr)
+		}
+	}
+	if err := iterator.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(actualKeys) != len(expectedKeys) {
+		t.Errorf("Expected %d keys to be iterated, but got %d", len(expectedKeys), len(actualKeys))
+	}
+	for key := range expectedKeys {
+		if _, ok := actualKeys[key]; !ok {
+			t.Errorf("Expected key %q was not returned by the iteration", key)
 		}
 	}
 }

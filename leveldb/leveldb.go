@@ -2,8 +2,11 @@ package leveldb
 
 import (
 	"github.com/syndtr/goleveldb/leveldb"
+	leveldbiterator "github.com/syndtr/goleveldb/leveldb/iterator"
 	"github.com/syndtr/goleveldb/leveldb/opt"
+	leveldbutil "github.com/syndtr/goleveldb/leveldb/util"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -82,6 +85,62 @@ func (s Store) Delete(k string) error {
 // abort any in-flight compactions and discard open transactions.
 func (s Store) Close() error {
 	return s.db.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a consistent snapshot of the store
+// (a LevelDB snapshot, which doesn't block writers),
+// so entries that are created or deleted while the iteration is in progress are not returned,
+// and entries are never returned multiple times or skipped.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	snapshot, err := s.db.GetSnapshot()
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		snapshot: snapshot,
+		iterator: snapshot.NewIterator(leveldbutil.BytesPrefix([]byte(keyPrefix)), nil),
+		codec:    s.codec,
+	}, nil
+}
+
+type iterator struct {
+	snapshot *leveldb.Snapshot
+	iterator leveldbiterator.Iterator
+	codec    encoding.Codec
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	return i.iterator.Next()
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return string(i.iterator.Key())
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.codec.Unmarshal(i.iterator.Value(), v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.iterator.Error()
+}
+
+// Close releases the iterator and the snapshot that backs it.
+func (i *iterator) Close() error {
+	i.iterator.Release()
+	i.snapshot.Release()
+	return nil
 }
 
 // Options are the options for the LevelDB store.

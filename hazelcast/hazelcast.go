@@ -3,10 +3,12 @@ package hazelcast
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	hazelcast "github.com/hazelcast/hazelcast-go-client"
 	"github.com/hazelcast/hazelcast-go-client/logger"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -84,6 +86,70 @@ func (c Client) Delete(k string) error {
 // This must be called to properly shut down connections and services (e.g. HeartBeatService).
 func (c Client) Close() error {
 	return c.c.Shutdown(context.Background())
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on the key set of the map at the time of the call,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+// Note: Hazelcast doesn't allow streaming the keys of a map one by one,
+// so all keys (but not their values) are loaded into memory when Iterate is called.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	keySet, err := c.m.GetKeySet(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(keySet))
+	for _, k := range keySet {
+		key, ok := k.(string)
+		if !ok {
+			return nil, fmt.Errorf("a key in the map was expected to be a string, but was type: %T", k)
+		}
+		if strings.HasPrefix(key, keyPrefix) {
+			keys = append(keys, key)
+		}
+	}
+
+	return &iterator{
+		client: c,
+		keys:   keys,
+		idx:    -1,
+	}, nil
+}
+
+type iterator struct {
+	client Client
+	keys   []string
+	idx    int
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.idx++
+	return i.idx < len(i.keys)
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.keys[i.idx]
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.keys[i.idx], v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
+	return nil
 }
 
 // Options are the options for the Hazelcast client.

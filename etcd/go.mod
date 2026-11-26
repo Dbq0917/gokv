@@ -3,6 +3,7 @@ module github.com/philippgille/gokv/etcd
 go 1.23.0
 
 require (
+	github.com/philippgille/gokv v0.7.0
 	github.com/philippgille/gokv/encoding v0.7.0
 	github.com/philippgille/gokv/test v0.7.0
 	github.com/philippgille/gokv/util v0.7.0
@@ -17,7 +18,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3 // indirect
-	github.com/philippgille/gokv v0.7.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.1 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

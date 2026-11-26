@@ -3,6 +3,7 @@ package badgerdb
 import (
 	"github.com/dgraph-io/badger"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -90,6 +91,82 @@ func (s Store) Delete(k string) error {
 // It must be called to make sure that all pending updates make their way to disk.
 func (s Store) Close() error {
 	return s.db.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a consistent snapshot of the store
+// (a BadgerDB read transaction, which doesn't block writers),
+// so entries that are created or deleted while the iteration is in progress are not returned,
+// and entries are never returned multiple times or skipped.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	txn := s.db.NewTransaction(false)
+
+	options := badger.DefaultIteratorOptions
+	options.Prefix = []byte(keyPrefix)
+
+	return &iterator{
+		txn:      txn,
+		iterator: txn.NewIterator(options),
+		codec:    s.codec,
+	}, nil
+}
+
+type iterator struct {
+	txn      *badger.Txn
+	iterator *badger.Iterator
+	codec    encoding.Codec
+	key      []byte
+	value    []byte
+	valueErr error
+	iterated bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if !i.iterated {
+		i.iterator.Rewind()
+		i.iterated = true
+	} else {
+		i.iterator.Next()
+	}
+	if !i.iterator.Valid() {
+		return false
+	}
+	item := i.iterator.Item()
+	i.key = item.KeyCopy(i.key[:0])
+	// The value is only valid within the transaction, so we copy it.
+	i.value, i.valueErr = item.ValueCopy(i.value[:0])
+	return true
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return string(i.key)
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+	if i.valueErr != nil {
+		return false, i.valueErr
+	}
+
+	return true, i.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that occurred while copying the current value, if any.
+func (i *iterator) Err() error {
+	return i.valueErr
+}
+
+// Close releases the resources held by the iterator and discards the read transaction.
+func (i *iterator) Close() error {
+	i.iterator.Close()
+	i.txn.Discard()
+	return nil
 }
 
 // Options are the options for the BadgerDB store.

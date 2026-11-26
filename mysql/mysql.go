@@ -7,6 +7,7 @@ import (
 	// but we'll use the package's ParseDNS() function so we make this an actual import.
 	gosqldriver "github.com/go-sql-driver/mysql"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/sql"
 )
@@ -69,6 +70,17 @@ func (c Client) Delete(k string) error {
 // It must be called to return all open connections to the connection pool and to release any open resources.
 func (c Client) Close() error {
 	return c.c.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The length of the key prefix must not exceed 255 characters.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	// It's tempting to remove this "wrapper" method
+	// and just use *sql.Client as embedded field,
+	// But we need this explicit method for a different GoDoc
+	// (255 character limit).
+	return c.c.Iterate(keyPrefix)
 }
 
 // Options are the options for the MySQL client.
@@ -204,13 +216,18 @@ func NewClient(options Options) (Client, error) {
 	if err != nil {
 		return result, err
 	}
+	iterateStmt, err := db.Prepare("SELECT k, v FROM " + options.TableName)
+	if err != nil {
+		return result, err
+	}
 
 	c := sql.Client{
-		C:          db,
-		UpsertStmt: upsertStmt,
-		GetStmt:    getStmt,
-		DeleteStmt: deleteStmt,
-		Codec:      options.Codec,
+		C:           db,
+		UpsertStmt:  upsertStmt,
+		GetStmt:     getStmt,
+		DeleteStmt:  deleteStmt,
+		IterateStmt: iterateStmt,
+		Codec:       options.Codec,
 	}
 
 	result.c = &c

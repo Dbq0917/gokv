@@ -56,6 +56,14 @@ func TestTypes(t *testing.T) {
 	})
 }
 
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+func TestIterate(t *testing.T) {
+	client := createClient(t, encoding.JSON)
+	defer func() { _ = client.Close() }()
+
+	test.TestIterate(client, t)
+}
+
 // TestClientConcurrent launches a bunch of goroutines that concurrently work with the MySQL client.
 func TestClientConcurrent(t *testing.T) {
 	// For some reason this test fails in GitHub Actions, but not locally.

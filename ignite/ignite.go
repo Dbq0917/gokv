@@ -3,13 +3,18 @@ package ignite
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	ignite "github.com/amsokol/ignite-go-client/binary/v1"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
+
+// iteratePageSize is the cursor page size that's used when iterating over the store.
+const iteratePageSize = 100
 
 // Client is a gokv.Store implementation for Apache Ignite.
 type Client struct {
@@ -84,6 +89,107 @@ func (c Client) Delete(k string) error {
 // It must be called to shut down all connections to the Apache Ignite server.
 func (c Client) Close() error {
 	return c.c.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the entries page by page via an Ignite scan query cursor,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	res, err := c.c.QueryScan(c.cacheName, true, ignite.QueryScanData{
+		PageSize:   iteratePageSize,
+		Partitions: -1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		client:    c,
+		cursorID:  res.ID,
+		keyPrefix: keyPrefix,
+		page:      res.QueryScanPage,
+	}, nil
+}
+
+type iterator struct {
+	client    Client
+	cursorID  int64
+	keyPrefix string
+	page      ignite.QueryScanPage
+	key       string
+	value     []byte
+	err       error
+	closed    bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil || i.closed {
+		return false
+	}
+
+	for {
+		for k, v := range i.page.Rows {
+			delete(i.page.Rows, k)
+			key, ok := k.(string)
+			if !ok {
+				i.err = fmt.Errorf("a key in the cache was expected to be a string, but was type: %T", k)
+				return false
+			}
+			if !strings.HasPrefix(key, i.keyPrefix) {
+				continue
+			}
+			value, ok := v.([]byte)
+			if !ok {
+				i.err = fmt.Errorf("the value for key %v is expected to be a slice of bytes, but its type is: %T", key, v)
+				return false
+			}
+			i.key = key
+			i.value = value
+			return true
+		}
+		if !i.page.HasMore {
+			return false
+		}
+		page, err := i.client.c.QueryScanCursorGetPage(i.cursorID)
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.page = page
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.client.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close closes the scan query cursor that backs the iterator.
+func (i *iterator) Close() error {
+	if i.closed {
+		return nil
+	}
+	i.closed = true
+	return i.client.c.ResourceClose(i.cursorID)
 }
 
 // Options are the options for the Apache Ignite client.

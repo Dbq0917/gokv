@@ -6,6 +6,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -90,6 +91,88 @@ func (c Client) Delete(k string) error {
 // It must be called to release any open resources.
 func (c Client) Close() error {
 	return c.c.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator uses Redis' SCAN command to stream the keys batch by batch
+// instead of loading all of them into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned.
+// Because SCAN can return a key multiple times in rare cases (while Redis rehashes its internal tables),
+// the iterator keeps track of the keys it already returned (in memory) to never return an entry multiple times.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		client: c,
+		match:  keyPrefix + "*",
+		seen:   make(map[string]struct{}),
+	}, nil
+}
+
+type iterator struct {
+	client Client
+	match  string
+	cursor uint64
+	keys   []string
+	seen   map[string]struct{}
+	key    string
+	err    error
+	done   bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil || i.done {
+		return false
+	}
+
+	for {
+		if len(i.keys) > 0 {
+			key := i.keys[0]
+			i.keys = i.keys[1:]
+			if _, ok := i.seen[key]; ok {
+				continue
+			}
+			i.seen[key] = struct{}{}
+			i.key = key
+			return true
+		}
+		if i.done {
+			return false
+		}
+		tctx, cancel := context.WithTimeout(context.Background(), i.client.timeOut)
+		keys, cursor, err := i.client.c.Scan(tctx, i.cursor, i.match, 100).Result()
+		cancel()
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.keys = keys
+		i.cursor = cursor
+		if cursor == 0 {
+			i.done = true
+		}
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.key, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
+	return nil
 }
 
 // Options are the options for the Redis client.

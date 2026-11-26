@@ -1,8 +1,11 @@
 package freecache
 
 import (
+	"strings"
+
 	"github.com/coocood/freecache"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -70,6 +73,70 @@ func (s Store) Delete(k string) error {
 func (s Store) Close() error {
 	s.s.Clear()
 	// TODO: Set s.s to nil to free up resources? "Resources" meaning the for example 256 MiB memory?
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the entries one by one via FreeCache's iterator,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned.
+// Because FreeCache can hold stale copies of overwritten entries until they are evicted,
+// the iterator keeps track of the keys it already returned (in memory) to never return an entry multiple times.
+// The store is not locked while you work with the iterator.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		store:     s,
+		iterator:  s.s.NewIterator(),
+		keyPrefix: keyPrefix,
+		seen:      make(map[string]struct{}),
+	}, nil
+}
+
+type iterator struct {
+	store     Store
+	iterator  *freecache.Iterator
+	keyPrefix string
+	seen      map[string]struct{}
+	key       string
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	for {
+		entry := i.iterator.Next()
+		if entry == nil {
+			return false
+		}
+		key := string(entry.Key)
+		if !strings.HasPrefix(key, i.keyPrefix) {
+			continue
+		}
+		if _, ok := i.seen[key]; ok {
+			continue
+		}
+		i.seen[key] = struct{}{}
+		i.key = key
+		return true
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.store.Get(i.key, v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -104,6 +105,80 @@ func (c Client) Delete(k string) error {
 // Close closes the client.
 // In the S3 implementation this doesn't have any effect.
 func (c Client) Close() error {
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the object keys page by page via S3's ListObjectsV2 operation,
+// so you can process them without loading all keys into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return &iterator{
+		client: c,
+		listObjectsInput: awss3.ListObjectsV2Input{
+			Bucket: &c.bucketName,
+			Prefix: &keyPrefix,
+		},
+		first: true,
+	}, nil
+}
+
+type iterator struct {
+	client           Client
+	listObjectsInput awss3.ListObjectsV2Input
+	objects          []*awss3.Object
+	key              string
+	err              error
+	first            bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for {
+		if len(i.objects) > 0 {
+			object := i.objects[0]
+			i.objects = i.objects[1:]
+			i.key = *object.Key
+			return true
+		}
+		if !i.first && (i.listObjectsInput.ContinuationToken == nil || *i.listObjectsInput.ContinuationToken == "") {
+			return false
+		}
+		i.first = false
+		listObjectsOutput, err := i.client.c.ListObjectsV2(&i.listObjectsInput)
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.objects = listObjectsOutput.Contents
+		i.listObjectsInput.ContinuationToken = listObjectsOutput.NextContinuationToken
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.key, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

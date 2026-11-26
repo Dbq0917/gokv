@@ -1,10 +1,12 @@
 package memcached
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -88,6 +90,12 @@ func (c Client) Delete(k string) error {
 // In the Memcached implementation this doesn't have any effect.
 func (c Client) Close() error {
 	return nil
+}
+
+// Iterate is not supported, because Memcached doesn't allow listing keys.
+// It always returns an error wrapping gokv.ErrIterationNotSupported.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	return nil, fmt.Errorf("memcached doesn't allow listing keys: %w", gokv.ErrIterationNotSupported)
 }
 
 // Options are the options for the Memcached client.

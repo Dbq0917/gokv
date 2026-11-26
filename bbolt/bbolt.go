@@ -1,8 +1,11 @@
 package bbolt
 
 import (
+	"bytes"
+
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -94,6 +97,77 @@ func (s Store) Delete(k string) error {
 // It must be called to make sure that all open transactions finish and to release all DB resources.
 func (s Store) Close() error {
 	return s.db.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a consistent snapshot of the store
+// (a bbolt read transaction, which doesn't block writers),
+// so entries that are created or deleted while the iteration is in progress are not returned,
+// and entries are never returned multiple times or skipped.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		tx:     tx,
+		cursor: tx.Bucket([]byte(s.bucketName)).Cursor(),
+		prefix: []byte(keyPrefix),
+		codec:  s.codec,
+	}, nil
+}
+
+type iterator struct {
+	tx     *bolt.Tx
+	cursor *bolt.Cursor
+	prefix []byte
+	codec  encoding.Codec
+	key    []byte
+	value  []byte
+	first  bool
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	var k, v []byte
+	if !i.first {
+		k, v = i.cursor.Seek(i.prefix)
+		i.first = true
+	} else {
+		k, v = i.cursor.Next()
+	}
+	if k == nil || !bytes.HasPrefix(k, i.prefix) {
+		return false
+	}
+	i.key = k
+	i.value = v
+	return true
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return string(i.key)
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.codec.Unmarshal(i.value, v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close rolls back the read transaction that backs the iterator.
+func (i *iterator) Close() error {
+	return i.tx.Rollback()
 }
 
 // Options are the options for the bbolt store.

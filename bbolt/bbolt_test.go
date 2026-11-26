@@ -46,6 +46,14 @@ func TestTypes(t *testing.T) {
 	})
 }
 
+// TestIterate tests if iterating over the key-value pairs of the store works properly.
+func TestIterate(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	test.TestIterate(store, t)
+}
+
 // TestStoreConcurrent launches a bunch of goroutines that concurrently work with one store.
 // The store works with a single file, so everything should be locked properly.
 // The locking is implemented in the bbolt package, but test it nonetheless.

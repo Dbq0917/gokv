@@ -1,16 +1,23 @@
 package file
 
 import (
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
 
 var defaultFilenameExtension = "json"
+
+// iterateChunkSize is the number of directory entries that are read from the file system at once
+// while iterating over the store.
+const iterateChunkSize = 100
 
 // Store is a gokv.Store implementation for storing key-value pairs as files.
 type Store struct {
@@ -129,6 +136,100 @@ func (s Store) Close() error {
 		delete(s.fileLocks, k)
 	}
 	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator reads the directory entries chunk by chunk instead of all at once,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	dir, err := os.Open(s.directory)
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		store: s,
+		dir:   dir,
+		// url.PathEscape escapes at least all characters that can't be used in file names,
+		// so we can compare the escaped prefix with the file names.
+		escapedPrefix: url.PathEscape(keyPrefix),
+	}, nil
+}
+
+type iterator struct {
+	store         Store
+	dir           *os.File
+	escapedPrefix string
+	entries       []os.DirEntry
+	key           string
+	err           error
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for {
+		if len(i.entries) == 0 {
+			entries, err := i.dir.ReadDir(iterateChunkSize)
+			if err == io.EOF {
+				return false
+			} else if err != nil {
+				i.err = err
+				return false
+			}
+			i.entries = entries
+		}
+
+		entry := i.entries[0]
+		i.entries = i.entries[1:]
+
+		if entry.IsDir() {
+			continue
+		}
+		filename := entry.Name()
+		if i.store.filenameExtension != "" {
+			if !strings.HasSuffix(filename, "."+i.store.filenameExtension) {
+				continue
+			}
+			filename = strings.TrimSuffix(filename, "."+i.store.filenameExtension)
+		}
+		if !strings.HasPrefix(filename, i.escapedPrefix) {
+			continue
+		}
+		key, err := url.PathUnescape(filename)
+		if err != nil {
+			i.err = err
+			return false
+		}
+		i.key = key
+		return true
+	}
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.store.Get(i.key, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close closes the directory handle that backs the iterator.
+func (i *iterator) Close() error {
+	return i.dir.Close()
 }
 
 // prepFileLock returns an existing file lock or creates a new one

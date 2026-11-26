@@ -1,8 +1,10 @@
 package gomap
 
 import (
+	"strings"
 	"sync"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -79,6 +81,64 @@ func (s Store) Close() error {
 	for k := range s.m {
 		delete(s.m, k)
 	}
+	return nil
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a snapshot of the keys that is taken when Iterate is called,
+// so entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (s Store) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	// A Go map can't be iterated safely while it's modified,
+	// so we take a snapshot of the keys under a short read lock
+	// instead of locking the store for the whole iteration.
+	s.lock.RLock()
+	keys := make([]string, 0, len(s.m))
+	for k := range s.m {
+		if strings.HasPrefix(k, keyPrefix) {
+			keys = append(keys, k)
+		}
+	}
+	s.lock.RUnlock()
+
+	return &iterator{
+		store: s,
+		keys:  keys,
+		idx:   -1,
+	}, nil
+}
+
+type iterator struct {
+	store Store
+	keys  []string
+	idx   int
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.idx++
+	return i.idx < len(i.keys)
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.keys[i.idx]
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.store.Get(i.keys[i.idx], v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
 	return nil
 }
 

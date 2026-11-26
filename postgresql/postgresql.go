@@ -113,13 +113,18 @@ func NewClient(options Options) (Client, error) {
 	if err != nil {
 		return result, err
 	}
+	iterateStmt, err := db.Prepare("SELECT k, v FROM " + options.TableName)
+	if err != nil {
+		return result, err
+	}
 
 	c := sql.Client{
-		C:          db,
-		UpsertStmt: upsertStmt,
-		GetStmt:    getStmt,
-		DeleteStmt: deleteStmt,
-		Codec:      options.Codec,
+		C:           db,
+		UpsertStmt:  upsertStmt,
+		GetStmt:     getStmt,
+		DeleteStmt:  deleteStmt,
+		IterateStmt: iterateStmt,
+		Codec:       options.Codec,
 	}
 
 	result.Client = &c

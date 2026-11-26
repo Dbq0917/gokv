@@ -2,7 +2,9 @@ package sql
 
 import (
 	"database/sql"
+	"strings"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -13,7 +15,10 @@ type Client struct {
 	UpsertStmt *sql.Stmt
 	GetStmt    *sql.Stmt
 	DeleteStmt *sql.Stmt
-	Codec      encoding.Codec
+	// IterateStmt must select the key and value columns of all key-value pairs,
+	// for example "SELECT k, v FROM Item".
+	IterateStmt *sql.Stmt
+	Codec       encoding.Codec
 }
 
 // Set stores the given value for the given key.
@@ -79,6 +84,83 @@ func (c Client) Delete(k string) error {
 // It must be called to return all open connections to the connection pool and to release any open resources.
 func (c Client) Close() error {
 	return c.C.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator streams the rows of a single SELECT query,
+// so you can process them without loading all key-value pairs into memory at once.
+// Entries that are created or deleted while the iteration is in progress may or may not be returned,
+// but entries are never returned multiple times and entries that existed before the iteration are never skipped.
+// The store is not locked while you work with the iterator.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	rows, err := c.IterateStmt.Query()
+	if err != nil {
+		return nil, err
+	}
+
+	return &iterator{
+		rows:      rows,
+		keyPrefix: keyPrefix,
+		codec:     c.Codec,
+	}, nil
+}
+
+type iterator struct {
+	rows      *sql.Rows
+	keyPrefix string
+	codec     encoding.Codec
+	key       string
+	value     []byte
+	err       error
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	if i.err != nil {
+		return false
+	}
+
+	for i.rows.Next() {
+		var key string
+		var value []byte
+		if err := i.rows.Scan(&key, &value); err != nil {
+			i.err = err
+			return false
+		}
+		if !strings.HasPrefix(key, i.keyPrefix) {
+			continue
+		}
+		i.key = key
+		i.value = value
+		return true
+	}
+	i.err = i.rows.Err()
+	return false
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.key
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	if err := util.CheckVal(v); err != nil {
+		return false, err
+	}
+
+	return true, i.codec.Unmarshal(i.value, v)
+}
+
+// Err returns the error that caused Next to return false, if any.
+func (i *iterator) Err() error {
+	return i.err
+}
+
+// Close closes the rows that back the iterator.
+func (i *iterator) Close() error {
+	return i.rows.Close()
 }
 
 // CreateDB creates a database with the given name.

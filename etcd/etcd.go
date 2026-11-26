@@ -7,6 +7,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"github.com/philippgille/gokv"
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
@@ -89,6 +90,66 @@ func (c Client) Delete(k string) error {
 // It must be called to shut down all connections to the etcd server.
 func (c Client) Close() error {
 	return c.c.Close()
+}
+
+// Iterate returns an iterator for the key-value pairs whose key starts with the given key prefix.
+// An empty prefix iterates over all key-value pairs in the store.
+// The iterator works on a consistent snapshot of the keys
+// (a single etcd range request at a specific revision, which doesn't block writers),
+// so entries that are created or deleted while the iteration is in progress are not returned,
+// and entries are never returned multiple times or skipped.
+// Note: etcd doesn't allow streaming the keys of a range one by one,
+// so all keys (but not their values) are loaded into memory when Iterate is called.
+func (c Client) Iterate(keyPrefix string) (gokv.Iterator, error) {
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), c.timeOut)
+	defer cancel()
+	getRes, err := c.c.Get(ctxWithTimeout, keyPrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly())
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(getRes.Kvs))
+	for _, kv := range getRes.Kvs {
+		keys = append(keys, string(kv.Key))
+	}
+
+	return &iterator{
+		client: c,
+		keys:   keys,
+		idx:    -1,
+	}, nil
+}
+
+type iterator struct {
+	client Client
+	keys   []string
+	idx    int
+}
+
+// Next advances the iterator to the next entry.
+func (i *iterator) Next() bool {
+	i.idx++
+	return i.idx < len(i.keys)
+}
+
+// Key returns the key of the entry the iterator currently points to.
+func (i *iterator) Key() string {
+	return i.keys[i.idx]
+}
+
+// Value unmarshals the value of the entry the iterator currently points to into v.
+func (i *iterator) Value(v any) (found bool, err error) {
+	return i.client.Get(i.keys[i.idx], v)
+}
+
+// Err always returns nil because the iteration can't fail.
+func (i *iterator) Err() error {
+	return nil
+}
+
+// Close doesn't have any resources to release.
+func (i *iterator) Close() error {
+	return nil
 }
 
 // Options are the options for the etcd client.
