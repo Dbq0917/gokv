@@ -1,8 +1,11 @@
 package file_test
 
 import (
+	"errors"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/philippgille/gokv"
@@ -140,6 +143,94 @@ func TestClose(t *testing.T) {
 	err := store.Close()
 	if err != nil {
 		t.Error(err)
+	}
+}
+
+// TestCorruptFile tests that a file with corrupt (e.g. truncated) content
+// is reported as corruption via ErrCorrupt instead of a raw codec error,
+// and that a regular Set repairs the key.
+func TestCorruptFile(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	err := store.Set("foo", test.Foo{Bar: "baz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a torn write by truncating the file.
+	filePath := filepath.Join(path, "foo.json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(filePath, data[:len(data)/2], 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Get("foo", new(test.Foo))
+	if err == nil {
+		t.Fatal("Expected an error for the corrupt file")
+	}
+	if !errors.Is(err, file.ErrCorrupt) {
+		t.Errorf("Expected the error to match file.ErrCorrupt, got: %v", err)
+	}
+
+	// A regular write must repair the key.
+	err = store.Set("foo", test.Foo{Bar: "repaired"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.Get("foo", new(test.Foo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Error("Expected the repaired key to be found")
+	}
+}
+
+// TestAtomicWriteNoTempFiles tests that a Set doesn't leave any temporary files behind.
+func TestAtomicWriteNoTempFiles(t *testing.T) {
+	store, path := createStore(t, encoding.JSON)
+	defer cleanUp(store, path)
+
+	err := store.Set("foo", test.Foo{Bar: "baz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".gokv-tmp-") {
+			t.Errorf("Found leftover temporary file: %s", entry.Name())
+		}
+	}
+}
+
+// TestStaleTempFilesCleanedUp tests that temporary files left behind by
+// interrupted writes are removed when the store is opened.
+func TestStaleTempFilesCleanedUp(t *testing.T) {
+	path := generateRandomTempDBpath(t)
+
+	staleFilePath := filepath.Join(path, ".gokv-tmp-stale")
+	err := os.WriteFile(staleFilePath, []byte("partial data"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := file.NewStore(file.Options{Directory: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanUp(store, path)
+
+	if _, err := os.Stat(staleFilePath); !os.IsNotExist(err) {
+		t.Error("Expected the stale temporary file to be removed")
 	}
 }
 

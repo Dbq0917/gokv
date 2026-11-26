@@ -1,9 +1,12 @@
 package file
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/philippgille/gokv/encoding"
@@ -11,6 +14,16 @@ import (
 )
 
 var defaultFilenameExtension = "json"
+
+// ErrCorrupt is returned (wrapped) by Get when the file for a key exists
+// but its content can't be decoded, for example because a previous write
+// was interrupted. Use errors.Is to check for it.
+// The key can be repaired by simply calling Set for it again.
+var ErrCorrupt = errors.New("gokv/file: stored data is corrupt")
+
+// tempFilePrefix is the prefix of temporary files used during atomic writes.
+// Files with this prefix never contain committed data and may be deleted at any time.
+const tempFilePrefix = ".gokv-tmp-"
 
 // Store is a gokv.Store implementation for storing key-value pairs as files.
 type Store struct {
@@ -51,7 +64,7 @@ func (s Store) Set(k string, v any) error {
 	// File lock and file handling.
 	lock.Lock()
 	defer lock.Unlock()
-	return os.WriteFile(filePath, data, 0o600)
+	return writeFileAtomic(s.directory, filePath, data)
 }
 
 // Get retrieves the stored value for the given key.
@@ -88,7 +101,15 @@ func (s Store) Get(k string, v any) (found bool, err error) {
 		return false, err
 	}
 
-	return true, s.codec.Unmarshal(data, v)
+	err = s.codec.Unmarshal(data, v)
+	if err != nil {
+		// The file exists but its content is undecodable, e.g. a truncated
+		// leftover from a crashed write by an older version. Report it as
+		// corruption instead of leaking a raw codec error. A regular Set
+		// for the same key atomically replaces the file and repairs the key.
+		return true, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	return true, nil
 }
 
 // Delete deletes the stored value for the given key.
@@ -193,6 +214,19 @@ func NewStore(options Options) (Store, error) {
 		return result, err
 	}
 
+	// Remove temporary files left behind by interrupted atomic writes.
+	// They never contain committed data.
+	entries, err := os.ReadDir(options.Directory)
+	if err != nil {
+		return result, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), tempFilePrefix) {
+			// Best-effort: a file that can't be removed doesn't prevent the store from working.
+			_ = os.Remove(filepath.Join(options.Directory, entry.Name()))
+		}
+	}
+
 	result.directory = options.Directory
 	result.locksLock = new(sync.Mutex)
 	result.fileLocks = make(map[string]*sync.RWMutex)
@@ -200,4 +234,46 @@ func NewStore(options Options) (Store, error) {
 	result.codec = options.Codec
 
 	return result, nil
+}
+
+// writeFileAtomic writes data to filePath atomically:
+// readers either see the complete new content or none of it.
+// It does so by writing to a temporary file in the same directory,
+// syncing it to disk and then renaming it over the target path.
+func writeFileAtomic(dir, filePath string, data []byte) error {
+	tmpFile, err := os.CreateTemp(dir, tempFilePrefix+"*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	// Flush the content to disk before the rename, so that after a crash
+	// the renamed file doesn't exist with missing content.
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	// Best-effort: sync the directory so the rename itself is durable.
+	// Errors are ignored because some platforms/filesystems don't support it.
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+
+	return nil
 }
