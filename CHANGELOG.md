@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 vNext
 -----
 
+### Added
+
+- Stored values are now marked with the encoding format they're written in, so reading a value with a different codec than it was written with (e.g. after switching the codec in a store's options, or after moving data to another backend) leads to an error instead of a decoding failure or a silently returned zero value
+  - Values written by previous gokv versions (which don't carry a format marker) are still decoded with the configured codec
+
+### Removed
+
+- The `FilenameExtension` option of the `file` store implementation
+  - The encoding of a stored value is now identified by the marker within the stored bytes, so the filename extension is no longer used as encoding indicator
+  - Files written by previous gokv versions (with `.json` or `.gob` extension) are still read and deleted
+
 v0.7.0 (2024-01-28)
 -------------------
 

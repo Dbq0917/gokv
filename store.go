@@ -17,6 +17,10 @@ type Store interface {
 	// In case of a struct the Get method will populate the fields of the object
 	// that the passed pointer points to with the values of the retrieved object's values.
 	// If no value is found it returns (false, nil).
+	// (false, nil) is only returned when the key doesn't exist.
+	// If the stored value can't be decoded, for example because it was
+	// encoded with a different codec than the store is configured with,
+	// an error is returned instead.
 	// The key must not be "" and the pointer must not be nil.
 	Get(k string, v any) (found bool, err error)
 	// Delete deletes the stored value for the given key.

@@ -5,12 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/philippgille/gokv/encoding"
 	"github.com/philippgille/gokv/util"
 )
 
-var defaultFilenameExtension = "json"
+// legacyFilenameExtensions are the filename extensions that previous versions
+// of this package appended to the file name to indicate the encoding of the file content.
+// The encoding of a stored value is now identified by a marker within the stored bytes,
+// making the filename extension redundant as encoding indicator,
+// but files with those extensions are still read and deleted,
+// so that data written by previous versions remains accessible.
+var legacyFilenameExtensions = []string{"json", "gob"}
 
 // Store is a gokv.Store implementation for storing key-value pairs as files.
 type Store struct {
@@ -18,10 +25,9 @@ type Store struct {
 	// (no two goroutines may create a lock for a filename that doesn't have a lock yet).
 	locksLock *sync.Mutex
 	// For locking file access.
-	fileLocks         map[string]*sync.RWMutex
-	filenameExtension string
-	directory         string
-	codec             encoding.Codec
+	fileLocks map[string]*sync.RWMutex
+	directory string
+	codec     encoding.Codec
 }
 
 // Set stores the given value for the given key.
@@ -42,11 +48,7 @@ func (s Store) Set(k string, v any) error {
 	// Prepare file lock.
 	lock := s.prepFileLock(escapedKey)
 
-	filename := escapedKey
-	if s.filenameExtension != "" {
-		filename += "." + s.filenameExtension
-	}
-	filePath := filepath.Clean(s.directory + "/" + filename)
+	filePath := filepath.Clean(s.directory + "/" + escapedKey)
 
 	// File lock and file handling.
 	lock.Lock()
@@ -70,16 +72,20 @@ func (s Store) Get(k string, v any) (found bool, err error) {
 	// Prepare file lock.
 	lock := s.prepFileLock(escapedKey)
 
-	filename := escapedKey
-	if s.filenameExtension != "" {
-		filename += "." + s.filenameExtension
-	}
-	filePath := filepath.Clean(s.directory + "/" + filename)
+	filePath := filepath.Clean(s.directory + "/" + escapedKey)
 
 	// File lock and file handling.
 	lock.RLock()
 	// Deferring the unlocking would lead to the unmarshalling being done during the lock, which is bad for performance.
 	data, err := os.ReadFile(filePath)
+	if err != nil && os.IsNotExist(err) {
+		// The file might have been written by a previous version of this package,
+		// which appended an encoding-specific extension to the file name.
+		legacyFilePath := s.legacyFilePath(escapedKey)
+		if legacyFilePath != "" {
+			data, err = os.ReadFile(legacyFilePath)
+		}
+	}
 	lock.RUnlock()
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -104,20 +110,24 @@ func (s Store) Delete(k string) error {
 	// Prepare file lock.
 	lock := s.prepFileLock(escapedKey)
 
-	filename := escapedKey
-	if s.filenameExtension != "" {
-		filename += "." + s.filenameExtension
-	}
-	filePath := filepath.Clean(s.directory + "/" + filename)
+	filePath := filepath.Clean(s.directory + "/" + escapedKey)
 
 	// File lock and file handling.
 	lock.Lock()
 	defer lock.Unlock()
 	err := os.Remove(filePath)
-	if os.IsNotExist(err) {
-		return nil
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	return err
+	// Also delete files that previous versions of this package created for the key.
+	for _, extension := range legacyFilenameExtensions {
+		legacyFilePath := filepath.Clean(s.directory + "/" + escapedKey + "." + extension)
+		err := os.Remove(legacyFilePath)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the store.
@@ -143,22 +153,39 @@ func (s Store) prepFileLock(escapedKey string) *sync.RWMutex {
 	return lock
 }
 
-// Options are the options for the Go map store.
+// legacyFilePath returns the path of the file that previous versions of this package
+// created for the given key, or "" if no such file exists.
+// Previous versions appended an encoding-specific extension to the file name.
+// If files with multiple legacy extensions exist
+// (which can happen when the codec was switched back and forth),
+// the most recently modified one is returned.
+func (s Store) legacyFilePath(escapedKey string) string {
+	var result string
+	var modTime time.Time
+	for _, extension := range legacyFilenameExtensions {
+		filePath := filepath.Clean(s.directory + "/" + escapedKey + "." + extension)
+		fileInfo, err := os.Stat(filePath)
+		if err != nil {
+			continue
+		}
+		if result == "" || fileInfo.ModTime().After(modTime) {
+			result = filePath
+			modTime = fileInfo.ModTime()
+		}
+	}
+	return result
+}
+
+// Options are the options for the file store.
 type Options struct {
 	// The directory in which to store files.
 	// Can be absolute or relative.
 	// Optional ("gokv" by default).
 	Directory string
-	// Extension of the filename, e.g. "json".
-	// This makes it easier for example to open a file with a text editor that supports syntax highlighting.
-	// But it can lead to redundant and/or stale data if you switch the Codec back and forth!
-	// You also should make sure to change this when changing the Codec,
-	// although it doesn't matter for gokv, but it might be confusing when there's a gob file with a ".json" filename extension.
-	// Set to "" to disable.
-	// Optional ("json" by default).
-	FilenameExtension *string
 	// Encoding format.
-	// Note: When you change this, you should also change the FilenameExtension if it's not empty ("").
+	// The stored bytes are marked with the format,
+	// so reading a value with a different codec than it was written with
+	// leads to an error instead of a decoding failure or a silently returned zero value.
 	// Optional (encoding.JSON by default).
 	Codec encoding.Codec
 }
@@ -166,12 +193,11 @@ type Options struct {
 // DefaultOptions is an Options object with default values.
 // Directory: "gokv", Codec: encoding.JSON
 var DefaultOptions = Options{
-	Directory:         "gokv",
-	FilenameExtension: &defaultFilenameExtension,
-	Codec:             encoding.JSON,
+	Directory: "gokv",
+	Codec:     encoding.JSON,
 }
 
-// NewStore creates a new Go map store.
+// NewStore creates a new file store.
 //
 // You should call the Close() method on the store when you're done working with it.
 func NewStore(options Options) (Store, error) {
@@ -180,9 +206,6 @@ func NewStore(options Options) (Store, error) {
 	// Set default options
 	if options.Directory == "" {
 		options.Directory = DefaultOptions.Directory
-	}
-	if options.FilenameExtension == nil {
-		options.FilenameExtension = DefaultOptions.FilenameExtension
 	}
 	if options.Codec == nil {
 		options.Codec = DefaultOptions.Codec
@@ -196,7 +219,6 @@ func NewStore(options Options) (Store, error) {
 	result.directory = options.Directory
 	result.locksLock = new(sync.Mutex)
 	result.fileLocks = make(map[string]*sync.RWMutex)
-	result.filenameExtension = *options.FilenameExtension
 	result.codec = options.Codec
 
 	return result, nil

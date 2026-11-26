@@ -1,8 +1,11 @@
 package file_test
 
 import (
+	"bytes"
+	"encoding/gob"
 	"log"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/philippgille/gokv"
@@ -133,6 +136,137 @@ func TestNil(t *testing.T) {
 	t.Run("get with nil / nil value parameter", createTest(encoding.Gob))
 }
 
+// TestCodecSwitch tests the behaviour when a store is opened with a different codec
+// than the one that the stored values were written with.
+func TestCodecSwitch(t *testing.T) {
+	path := generateRandomTempDBpath(t)
+	defer func() { _ = os.RemoveAll(path) }()
+
+	// Write a value with the JSON codec
+	jsonStore, err := file.NewStore(file.Options{Directory: path, Codec: encoding.JSON})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = jsonStore.Set("foo", test.Foo{Bar: "baz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = jsonStore.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen the store with the gob codec.
+	// Reading the JSON-encoded value must lead to an error,
+	// and NOT to (false, nil), which is reserved for non-existing keys,
+	// and NOT to a silently returned zero value.
+	gobStore, err := file.NewStore(file.Options{Directory: path, Codec: encoding.Gob})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanUp(gobStore, path)
+	found, err := gobStore.Get("foo", new(test.Foo))
+	if err == nil {
+		t.Error("Expected an error when reading a JSON-encoded value with the gob codec")
+	}
+	if !found && err == nil {
+		t.Error("(false, nil) must only be returned for non-existing keys")
+	}
+
+	// Writing and reading with the new codec works
+	err = gobStore.Set("bar", test.Foo{Bar: "baz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err = gobStore.Get("bar", new(test.Foo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Error("No value was found, but should have been")
+	}
+}
+
+// TestLegacyData tests that data written by previous gokv versions is still readable:
+// The file name had an encoding-specific extension
+// and the file content didn't carry a format marker.
+func TestLegacyData(t *testing.T) {
+	t.Run("JSON", func(t *testing.T) {
+		path := generateRandomTempDBpath(t)
+		defer func() { _ = os.RemoveAll(path) }()
+
+		// File as written by gokv versions that appended ".json" to the file name
+		// and didn't mark the content with its format
+		err := os.WriteFile(filepath.Join(path, "foo.json"), []byte(`{"Bar":"baz"}`), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		store, err := file.NewStore(file.Options{Directory: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanUp(store, path)
+
+		val := new(test.Foo)
+		found, err := store.Get("foo", val)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found {
+			t.Fatal("No value was found, but should have been")
+		}
+		if val.Bar != "baz" {
+			t.Errorf("Expected: %v, but was: %v", "baz", val.Bar)
+		}
+
+		// Deleting the key also deletes the legacy file
+		err = store.Delete("foo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = os.Stat(filepath.Join(path, "foo.json"))
+		if !os.IsNotExist(err) {
+			t.Error("The legacy file should have been deleted")
+		}
+	})
+
+	t.Run("gob", func(t *testing.T) {
+		path := generateRandomTempDBpath(t)
+		defer func() { _ = os.RemoveAll(path) }()
+
+		// File as written by gokv versions that appended ".gob" to the file name
+		// and didn't mark the content with its format
+		buffer := new(bytes.Buffer)
+		err := gob.NewEncoder(buffer).Encode(test.Foo{Bar: "baz"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(filepath.Join(path, "foo.gob"), buffer.Bytes(), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		store, err := file.NewStore(file.Options{Directory: path, Codec: encoding.Gob})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanUp(store, path)
+
+		val := new(test.Foo)
+		found, err := store.Get("foo", val)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found {
+			t.Fatal("No value was found, but should have been")
+		}
+		if val.Bar != "baz" {
+			t.Errorf("Expected: %v, but was: %v", "baz", val.Bar)
+		}
+	})
+}
+
 // TestClose tests if the close method returns any errors.
 func TestClose(t *testing.T) {
 	store, path := createStore(t, encoding.JSON)
@@ -147,9 +281,7 @@ func createStore(t *testing.T, codec encoding.Codec) (file.Store, string) {
 	path := generateRandomTempDBpath(t)
 	options := file.Options{
 		Directory: path,
-		// Setting no FileNameEnding leads to all Codecs writing ".json" files,
-		// but that doesn't matter to the functionality of gokv.
-		Codec: codec,
+		Codec:     codec,
 	}
 	store, err := file.NewStore(options)
 	if err != nil {
